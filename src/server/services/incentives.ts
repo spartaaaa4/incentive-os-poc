@@ -1,4 +1,3 @@
-import { startOfMonth, endOfMonth } from "date-fns";
 import { AttendanceStatus, Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
 
@@ -401,7 +400,6 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
   ).length;
   const attendanceEligible = presentDays >= 5 && disqualifying === 0;
 
-  const saPool = split ? storePool * (asNumber(split.saPoolPct) / 100) : 0;
   const eligibleSAs = storeEmployees.filter((e: { role: string }) => e.role === "SA").length;
 
   const roleSplit = split
