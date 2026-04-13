@@ -54,7 +54,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ history });
   } catch (error) {
     console.error("Approvals API error:", error);
-    return NextResponse.json({ items: [], history: [], error: String(error) }, { status: 200 });
+    return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
 

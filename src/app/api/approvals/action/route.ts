@@ -35,8 +35,17 @@ export async function POST(request: Request) {
     }
 
     if (entityType === "TARGET") {
+      const refTarget = await db.target.findUnique({ where: { id: entityId } });
+      if (!refTarget || refTarget.status !== "SUBMITTED") {
+        return NextResponse.json({ error: "Target group not in SUBMITTED status" }, { status: 400 });
+      }
+
       await db.target.updateMany({
-        where: { status: "SUBMITTED" },
+        where: {
+          status: "SUBMITTED",
+          vertical: refTarget.vertical,
+          periodType: refTarget.periodType,
+        },
         data: {
           status: newStatus,
           approvedBy: action === "APPROVED" ? "checker" : undefined,

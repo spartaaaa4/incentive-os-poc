@@ -32,6 +32,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Targets API error:", error);
-    return NextResponse.json({ targets: [], error: String(error) }, { status: 200 });
+    return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

@@ -26,6 +26,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ plans });
   } catch (error) {
     console.error("Rules API error:", error);
-    return NextResponse.json({ plans: [], error: String(error) }, { status: 200 });
+    return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
