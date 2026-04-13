@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
-import { Download, Upload, X, FileSpreadsheet, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Download, Upload, X, FileSpreadsheet, AlertCircle, CheckCircle2, Search, RotateCcw } from "lucide-react";
 import { formatInr } from "@/lib/format";
 
 type SalesRow = {
@@ -22,8 +22,23 @@ type SalesRow = {
   transactionType: string;
   channel: string;
   calculatedIncentive: string;
+  incentiveAmount: number;
   status: "Calculated" | "Pending" | "Excluded";
 };
+
+type StoreOption = { storeCode: string; storeName: string; vertical: string };
+type EmployeeOption = { employeeId: string; employeeName: string; storeCode: string };
+
+type Filters = {
+  vertical: string;
+  storeCode: string;
+  transactionType: string;
+  employeeId: string;
+  dateFrom: string;
+  dateTo: string;
+};
+
+const emptyFilters: Filters = { vertical: "", storeCode: "", transactionType: "", employeeId: "", dateFrom: "", dateTo: "" };
 
 const columnSpec = [
   { key: "transactionId", label: "Transaction ID", type: "String", required: true, description: "Unique identifier for the sales transaction" },
@@ -69,9 +84,18 @@ function downloadTemplate() {
   URL.revokeObjectURL(url);
 }
 
+const selectClass = "rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors";
+const inputClass = "rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors w-[150px]";
+
 export function SalesView() {
   const [rows, setRows] = useState<SalesRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [appliedFilters, setAppliedFilters] = useState<Filters>(emptyFilters);
+
+  const [stores, setStores] = useState<StoreOption[]>([]);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+
   const [showUpload, setShowUpload] = useState(false);
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([]);
   const [csvErrors, setCsvErrors] = useState<string[]>([]);
@@ -81,10 +105,28 @@ export function SalesView() {
   const [showFieldRef, setShowFieldRef] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const loadRows = useCallback(async () => {
+  useEffect(() => {
+    fetch("/api/sales/filters")
+      .then((r) => (r.ok ? r.json() : { stores: [], employees: [] }))
+      .then((d) => {
+        setStores(d.stores ?? []);
+        setEmployees(d.employees ?? []);
+      })
+      .catch(() => {});
+  }, []);
+
+  const loadRows = useCallback(async (f: Filters) => {
     setLoading(true);
     try {
-      const response = await fetch("/api/sales");
+      const params = new URLSearchParams();
+      if (f.vertical) params.set("vertical", f.vertical);
+      if (f.storeCode) params.set("storeCode", f.storeCode);
+      if (f.transactionType) params.set("transactionType", f.transactionType);
+      if (f.employeeId) params.set("employeeId", f.employeeId);
+      if (f.dateFrom) params.set("dateFrom", f.dateFrom);
+      if (f.dateTo) params.set("dateTo", f.dateTo);
+      const qs = params.toString();
+      const response = await fetch(`/api/sales${qs ? `?${qs}` : ""}`);
       if (!response.ok) throw new Error();
       const payload = await response.json();
       setRows(payload.rows ?? []);
@@ -94,7 +136,25 @@ export function SalesView() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { void loadRows(); }, [loadRows]);
+  useEffect(() => { void loadRows(appliedFilters); }, [loadRows, appliedFilters]);
+
+  const filteredStores = useMemo(() => {
+    if (!filters.vertical) return stores;
+    return stores.filter((s) => s.vertical === filters.vertical);
+  }, [stores, filters.vertical]);
+
+  const filteredEmployees = useMemo(() => {
+    if (!filters.storeCode) return employees;
+    return employees.filter((e) => e.storeCode === filters.storeCode);
+  }, [employees, filters.storeCode]);
+
+  const handleApply = () => setAppliedFilters({ ...filters });
+  const handleReset = () => {
+    setFilters(emptyFilters);
+    setAppliedFilters(emptyFilters);
+  };
+
+  const hasActiveFilters = Object.values(appliedFilters).some(Boolean);
 
   const previewRows = useMemo(() => csvRows.slice(0, 5), [csvRows]);
   const validCount = csvRows.length - csvErrors.length;
@@ -110,13 +170,11 @@ export function SalesView() {
       });
       return normalized;
     });
-
     const errors: string[] = [];
     const headers = Object.keys(normalizedRows[0] ?? {});
     const missing = expectedColumns.filter((c) => !headers.includes(c));
     if (missing.length) errors.push(`Missing columns: ${missing.join(", ")}`);
     if (parsed.errors.length) errors.push(...parsed.errors.map((e) => e.message));
-
     setCsvRows(normalizedRows);
     setCsvErrors(errors);
   };
@@ -135,11 +193,8 @@ export function SalesView() {
         setImporting(false);
         return;
       }
-      setShowUpload(false);
-      setCsvRows([]);
-      setCsvErrors([]);
-      setFileName("");
-      await loadRows();
+      resetModal();
+      await loadRows(appliedFilters);
     } catch {
       setCsvErrors(["Network error during import"]);
     }
@@ -154,15 +209,109 @@ export function SalesView() {
     setShowFieldRef(false);
   };
 
+  const updateFilter = (key: keyof Filters, value: string) => {
+    setFilters((prev) => {
+      const next = { ...prev, [key]: value };
+      if (key === "vertical") {
+        next.storeCode = "";
+        next.employeeId = "";
+      }
+      if (key === "storeCode") {
+        next.employeeId = "";
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <button onClick={() => setShowUpload(true)}
-          className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
-          <Upload size={14} /> Upload Sales CSV
-        </button>
+      {/* Filter bar */}
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Vertical</label>
+            <select value={filters.vertical} onChange={(e) => updateFilter("vertical", e.target.value)} className={selectClass}>
+              <option value="">All Verticals</option>
+              <option value="ELECTRONICS">Electronics</option>
+              <option value="GROCERY">Grocery</option>
+              <option value="FNL">F&L</option>
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Store</label>
+            <select value={filters.storeCode} onChange={(e) => updateFilter("storeCode", e.target.value)} className={selectClass}>
+              <option value="">All Stores</option>
+              {filteredStores.map((s) => (
+                <option key={s.storeCode} value={s.storeCode}>{s.storeCode} — {s.storeName}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Transaction Type</label>
+            <select value={filters.transactionType} onChange={(e) => updateFilter("transactionType", e.target.value)} className={selectClass}>
+              <option value="">All Types</option>
+              <option value="NORMAL">Normal</option>
+              <option value="SFS">SFS</option>
+              <option value="PAS">PAS</option>
+              <option value="JIOMART">JioMart</option>
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Employee</label>
+            <select value={filters.employeeId} onChange={(e) => updateFilter("employeeId", e.target.value)} className={selectClass}>
+              <option value="">All Employees</option>
+              {filteredEmployees.map((e) => (
+                <option key={e.employeeId} value={e.employeeId}>{e.employeeId} — {e.employeeName}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Date From</label>
+            <input type="date" value={filters.dateFrom} onChange={(e) => updateFilter("dateFrom", e.target.value)} className={inputClass} />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Date To</label>
+            <input type="date" value={filters.dateTo} onChange={(e) => updateFilter("dateTo", e.target.value)} className={inputClass} />
+          </div>
+
+          <button onClick={handleApply}
+            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+            <Search size={14} /> Apply
+          </button>
+
+          {hasActiveFilters && (
+            <button onClick={handleReset}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+              <RotateCcw size={14} /> Reset
+            </button>
+          )}
+
+          <div className="ml-auto">
+            <button onClick={() => setShowUpload(true)}
+              className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+              <Upload size={14} /> Upload CSV
+            </button>
+          </div>
+        </div>
+        {hasActiveFilters && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+            <span>Showing {rows.length} results</span>
+            {appliedFilters.vertical && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.vertical}</span>}
+            {appliedFilters.storeCode && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.storeCode}</span>}
+            {appliedFilters.transactionType && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.transactionType}</span>}
+            {appliedFilters.employeeId && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.employeeId}</span>}
+            {appliedFilters.dateFrom && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">From {appliedFilters.dateFrom}</span>}
+            {appliedFilters.dateTo && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">To {appliedFilters.dateTo}</span>}
+          </div>
+        )}
       </div>
 
+      {/* Data table */}
       <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
@@ -181,7 +330,7 @@ export function SalesView() {
               <th className="p-3 text-right">Total</th>
               <th className="p-3 text-left">Type</th>
               <th className="p-3 text-left">Channel</th>
-              <th className="p-3 text-left">Incentive</th>
+              <th className="p-3 text-right">Incentive</th>
               <th className="p-3 text-left">Status</th>
             </tr>
           </thead>
@@ -189,20 +338,26 @@ export function SalesView() {
             {rows.map((row) => (
               <tr key={row.transactionId} className="border-t border-slate-100 hover:bg-slate-50/50">
                 <td className="p-3 font-mono text-xs">{row.transactionId}</td>
-                <td className="p-3">{row.transactionDate}</td>
-                <td className="p-3">{row.storeCode} — {row.storeName}</td>
+                <td className="p-3 whitespace-nowrap">{row.transactionDate}</td>
+                <td className="p-3 whitespace-nowrap">{row.storeCode} — {row.storeName}</td>
                 <td className="p-3">{row.vertical}</td>
-                <td className="p-3">{row.employeeName}</td>
+                <td className="p-3 whitespace-nowrap">{row.employeeName}</td>
                 <td className="p-3">{row.department}</td>
                 <td className="p-3 font-mono text-xs">{row.articleCode}</td>
                 <td className="p-3">{row.brand}</td>
                 <td className="p-3 text-right">{row.quantity}</td>
-                <td className="p-3 text-right">{formatInr(row.grossAmount)}</td>
-                <td className="p-3 text-right">{formatInr(row.taxAmount)}</td>
-                <td className="p-3 text-right">{formatInr(row.totalAmount)}</td>
+                <td className="p-3 text-right whitespace-nowrap">{formatInr(row.grossAmount)}</td>
+                <td className="p-3 text-right whitespace-nowrap">{formatInr(row.taxAmount)}</td>
+                <td className="p-3 text-right whitespace-nowrap">{formatInr(row.totalAmount)}</td>
                 <td className="p-3">{row.transactionType}</td>
                 <td className="p-3">{row.channel}</td>
-                <td className="p-3">{row.calculatedIncentive}</td>
+                <td className="p-3 text-right whitespace-nowrap font-medium">
+                  {row.incentiveAmount > 0 ? (
+                    <span className="text-emerald-700">{row.calculatedIncentive}</span>
+                  ) : (
+                    <span className="text-slate-400">{row.calculatedIncentive}</span>
+                  )}
+                </td>
                 <td className="p-3">
                   <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${statusClass(row.status)}`}>
                     {row.status}
@@ -220,10 +375,10 @@ export function SalesView() {
         </table>
       </div>
 
+      {/* Upload modal */}
       {showUpload && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="w-full max-w-4xl max-h-[90vh] rounded-2xl bg-white shadow-2xl flex flex-col overflow-hidden">
-            {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Upload Sales CSV</h3>
@@ -234,9 +389,7 @@ export function SalesView() {
               </button>
             </div>
 
-            {/* Scrollable body */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-              {/* Step 1: Template */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-sm font-medium text-slate-900">Step 1: Prepare your file</h4>
@@ -283,7 +436,6 @@ export function SalesView() {
                 </div>
               </div>
 
-              {/* Step 2: Upload */}
               <div>
                 <h4 className="text-sm font-medium text-slate-900 mb-2">Step 2: Upload your CSV</h4>
                 <div
@@ -320,7 +472,6 @@ export function SalesView() {
                 </div>
               </div>
 
-              {/* Validation */}
               {csvRows.length > 0 && (
                 <div>
                   <h4 className="text-sm font-medium text-slate-900 mb-2">Step 3: Review and import</h4>
@@ -387,7 +538,6 @@ export function SalesView() {
               )}
             </div>
 
-            {/* Footer */}
             <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200 bg-slate-50/50">
               <button onClick={resetModal}
                 className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
