@@ -71,15 +71,36 @@ const electronicsSlabs = [
   ["Large Washing Machines (LWC)", "IFB only", 500, 20000, 25], ["Large Washing Machines (LWC)", "IFB only", 20001, 35000, 50], ["Large Washing Machines (LWC)", "IFB only", 35001, 999999, 75],
 ];
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     if (process.env.ENABLE_SEED !== "true") {
       return NextResponse.json({ error: "Seed endpoint is disabled. Set ENABLE_SEED=true to enable." }, { status: 403 });
     }
 
+    const url = new URL(request.url);
+    const force = url.searchParams.get("force") === "true";
+
+    if (force) {
+      await db.incentiveLedger.deleteMany();
+      await db.auditLog.deleteMany();
+      await db.attendance.deleteMany();
+      await db.salesTransaction.deleteMany();
+      await db.target.deleteMany();
+      await db.campaignPayoutSlab.deleteMany();
+      await db.campaignStoreTarget.deleteMany();
+      await db.campaignArticle.deleteMany();
+      await db.campaignConfig.deleteMany();
+      await db.productIncentiveSlab.deleteMany();
+      await db.achievementMultiplier.deleteMany();
+      await db.fnlRoleSplit.deleteMany();
+      await db.incentivePlan.deleteMany();
+      await db.employeeMaster.deleteMany();
+      await db.storeMaster.deleteMany();
+    }
+
     const existingStores = await db.storeMaster.count();
     if (existingStores > 0) {
-      return NextResponse.json({ message: "Database already has data. Skipping seed." }, { status: 200 });
+      return NextResponse.json({ message: "Database already has data. Use ?force=true to reseed." }, { status: 200 });
     }
 
     sequence = 1;
