@@ -48,8 +48,12 @@ export function DashboardView() {
     setLoading(true);
     const qs = selected === "ALL" ? "" : `?vertical=${selected}`;
     fetch(`/api/dashboard${qs}`)
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then((payload: DashboardResponse) => setData(payload))
+      .catch((err) => console.error("Dashboard fetch failed:", err))
       .finally(() => setLoading(false));
   }, [selected]);
 
