@@ -71,6 +71,19 @@ const electronicsSlabs = [
   ["Large Washing Machines (LWC)", "IFB only", 500, 20000, 25], ["Large Washing Machines (LWC)", "IFB only", 20001, 35000, 50], ["Large Washing Machines (LWC)", "IFB only", 35001, 999999, 75],
 ];
 
+export async function GET() {
+  try {
+    const [storeCount, ledgerCount] = await Promise.all([
+      db.storeMaster.count(),
+      db.incentiveLedger.count(),
+    ]);
+    const needsReseed = storeCount === 0 || ledgerCount === 0;
+    return NextResponse.json({ storeCount, ledgerCount, needsReseed });
+  } catch {
+    return NextResponse.json({ storeCount: 0, ledgerCount: 0, needsReseed: false });
+  }
+}
+
 export async function POST(request: Request) {
   try {
     if (process.env.ENABLE_SEED !== "true") {
@@ -100,6 +113,13 @@ export async function POST(request: Request) {
 
     const existingStores = await db.storeMaster.count();
     if (existingStores > 0) {
+      const ledgerCount = await db.incentiveLedger.count();
+      if (ledgerCount === 0) {
+        const storeCodes = (await db.storeMaster.findMany({ select: { storeCode: true } })).map((s) => s.storeCode);
+        await recalculateIncentives({ storeCodes, periodStart: new Date("2026-04-01"), periodEnd: new Date("2026-04-30") });
+        const newCount = await db.incentiveLedger.count();
+        return NextResponse.json({ message: "Incentives recalculated on existing data", stats: { ledgerRows: newCount } });
+      }
       return NextResponse.json({ message: "Database already has data. Use ?force=true to reseed." }, { status: 200 });
     }
 
