@@ -119,7 +119,14 @@ export async function POST(request: Request) {
       const ledgerCount = await db.incentiveLedger.count();
       if (ledgerCount === 0) {
         const allStoreCodes = (await db.storeMaster.findMany({ select: { storeCode: true } })).map((s) => s.storeCode);
-        await recalculateIncentives({ storeCodes: allStoreCodes, periodStart: new Date("2026-04-01"), periodEnd: new Date("2026-04-30") });
+        const aprilStart = new Date("2026-04-01");
+        const aprilEnd = new Date("2026-04-30");
+        try {
+          await recalculateIncentives({ storeCodes: allStoreCodes, periodStart: aprilStart, periodEnd: aprilEnd });
+        } catch (err) {
+          console.error("Recalculation recovery error:", err);
+          return NextResponse.json({ message: `Recalculation failed: ${String(err)}`, stats: { ledgerRows: 0 } }, { status: 500 });
+        }
         const newLedgerCount = await db.incentiveLedger.count();
         return NextResponse.json({ message: "Incentives recalculated on existing data", stats: { ledgerRows: newLedgerCount } });
       }
@@ -270,16 +277,23 @@ export async function POST(request: Request) {
     await db.salesTransaction.createMany({ data: salesRows, skipDuplicates: true });
 
     const allStoreCodes = stores.map((s) => s.storeCode);
-    await recalculateIncentives({ storeCodes: allStoreCodes, periodStart: aprilStart, periodEnd: aprilEnd });
+    let recalcError: string | null = null;
+    try {
+      await recalculateIncentives({ storeCodes: allStoreCodes, periodStart: aprilStart, periodEnd: aprilEnd });
+    } catch (err) {
+      recalcError = String(err);
+      console.error("Recalculation error during seed:", err);
+    }
 
     const ledgerCount = await db.incentiveLedger.count();
+    const planCount = await db.incentivePlan.count({ where: { status: "ACTIVE" } });
 
     return NextResponse.json({
-      message: "Seed complete — incentives calculated",
-      stats: { stores: stores.length, employees: employeeRows.length, sales: salesRows.length, targets: targetRows.length, attendance: attendanceRows.length, ledgerRows: ledgerCount },
+      message: recalcError ? `Seed complete but recalculation failed: ${recalcError}` : "Seed complete — incentives calculated",
+      stats: { stores: stores.length, employees: employeeRows.length, sales: salesRows.length, targets: targetRows.length, attendance: attendanceRows.length, ledgerRows: ledgerCount, activePlans: planCount },
     });
   } catch (error) {
     console.error("Seed error:", error);
-    return NextResponse.json({ error: "Seed operation failed" }, { status: 500 });
+    return NextResponse.json({ error: `Seed operation failed: ${String(error)}` }, { status: 500 });
   }
 }

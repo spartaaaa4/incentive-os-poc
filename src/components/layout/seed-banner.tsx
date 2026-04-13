@@ -33,17 +33,23 @@ export function SeedBanner() {
 
   if (!empty || done) return null;
 
+  const [error, setError] = useState<string | null>(null);
+
   const runSeed = async () => {
     setSeeding(true);
+    setError(null);
     try {
       const res = await fetch("/api/seed?force=true", { method: "POST" });
-      if (res.ok) {
+      const data = await res.json();
+      if (res.ok && data.stats?.ledgerRows > 0) {
         setDone(true);
         setEmpty(false);
-        setTimeout(() => window.location.reload(), 500);
+        window.location.reload();
+      } else {
+        setError(data.message || data.error || "Seed completed but no incentive data was generated");
       }
-    } catch {
-      /* ignore */
+    } catch (e) {
+      setError(String(e));
     }
     setSeeding(false);
   };
@@ -61,6 +67,7 @@ export function SeedBanner() {
         className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors whitespace-nowrap">
         {seeding ? <><Loader2 size={14} className="animate-spin" /> Seeding...</> : "Reset & Load Demo Data"}
       </button>
+      {error && <p className="mt-2 text-xs text-red-600 max-w-xl break-words">{error}</p>}
     </div>
   );
 }
