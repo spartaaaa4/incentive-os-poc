@@ -1,0 +1,369 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Vertical {
+  ELECTRONICS
+  GROCERY
+  FNL
+}
+
+enum StoreStatus {
+  ACTIVE
+  INACTIVE
+  TEMPORARILY_CLOSED
+}
+
+enum EmployeeRole {
+  SM
+  DM
+  SA
+  BA
+}
+
+enum PayrollStatus {
+  ACTIVE
+  NOTICE_PERIOD
+  DISCIPLINARY_ACTION
+  LONG_LEAVE_UNAUTHORISED
+  INACTIVE
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LEAVE_APPROVED
+  LEAVE_UNAPPROVED
+  HOLIDAY
+  WEEK_OFF
+}
+
+enum TransactionType {
+  NORMAL
+  SFS
+  PAS
+  JIOMART
+}
+
+enum Channel {
+  OFFLINE
+  ONLINE
+}
+
+enum PeriodType {
+  MONTHLY
+  WEEKLY
+  CAMPAIGN
+}
+
+enum ApprovalStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  ACTIVE
+}
+
+enum FormulaType {
+  PER_UNIT
+  CAMPAIGN_SLAB
+  WEEKLY_POOL
+}
+
+enum CampaignDistributionRule {
+  EQUAL
+}
+
+enum CalculationStatus {
+  IN_PROGRESS
+  FINAL
+}
+
+enum AuditEntityType {
+  PLAN
+  TARGET
+  CAMPAIGN
+  CALCULATION
+}
+
+enum AuditAction {
+  CREATED
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CALCULATED
+}
+
+model StoreMaster {
+  storeCode          String      @id @map("store_code") @db.VarChar(32)
+  storeName          String      @map("store_name")
+  vertical           Vertical
+  storeFormat        String      @map("store_format")
+  state              String
+  city               String
+  storeStatus        StoreStatus @default(ACTIVE) @map("store_status")
+  operationalSince   DateTime    @map("operational_since") @db.Date
+  employees          EmployeeMaster[]
+  attendance         Attendance[]
+  salesTransactions  SalesTransaction[]
+  targets            Target[]
+  campaignTargets    CampaignStoreTarget[]
+  incentiveLedger    IncentiveLedger[]
+
+  @@map("store_master")
+}
+
+model EmployeeMaster {
+  employeeId      String         @id @map("employee_id") @db.VarChar(64)
+  employeeName    String         @map("employee_name")
+  role            EmployeeRole
+  storeCode       String         @map("store_code") @db.VarChar(32)
+  payrollStatus   PayrollStatus  @default(ACTIVE) @map("payroll_status")
+  dateOfJoining   DateTime       @map("date_of_joining") @db.Date
+  dateOfExit      DateTime?      @map("date_of_exit") @db.Date
+  store           StoreMaster    @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+  attendance      Attendance[]
+  sales           SalesTransaction[]
+  incentiveLedger IncentiveLedger[]
+
+  @@index([storeCode])
+  @@map("employee_master")
+}
+
+model Attendance {
+  id         Int              @id @default(autoincrement())
+  employeeId String           @map("employee_id") @db.VarChar(64)
+  storeCode  String           @map("store_code") @db.VarChar(32)
+  date       DateTime         @db.Date
+  status     AttendanceStatus
+  employee   EmployeeMaster   @relation(fields: [employeeId], references: [employeeId], onDelete: Restrict)
+  store      StoreMaster      @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+
+  @@unique([employeeId, date])
+  @@index([storeCode, date])
+  @@map("attendance")
+}
+
+model SalesTransaction {
+  transactionId      String           @id @map("transaction_id") @db.VarChar(96)
+  transactionDate    DateTime         @map("transaction_date") @db.Date
+  storeCode          String           @map("store_code") @db.VarChar(32)
+  vertical           Vertical
+  storeFormat        String           @map("store_format")
+  employeeId         String?          @map("employee_id") @db.VarChar(64)
+  department         String?
+  articleCode        String           @map("article_code")
+  productFamilyCode  String?          @map("product_family_code")
+  brand              String?
+  quantity           Int
+  grossAmount        Decimal          @map("gross_amount") @db.Decimal(14, 2)
+  taxAmount          Decimal          @map("tax_amount") @db.Decimal(14, 2)
+  totalAmount        Decimal          @map("total_amount") @db.Decimal(14, 2)
+  transactionType    TransactionType  @map("transaction_type")
+  channel            Channel
+  store              StoreMaster      @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+  employee           EmployeeMaster?  @relation(fields: [employeeId], references: [employeeId], onDelete: SetNull)
+
+  @@index([storeCode, transactionDate])
+  @@index([vertical, transactionDate])
+  @@index([transactionType, channel])
+  @@map("sales_transaction")
+}
+
+model Target {
+  id                Int            @id @default(autoincrement())
+  storeCode         String         @map("store_code") @db.VarChar(32)
+  vertical          Vertical
+  department        String?
+  productFamilyCode String?        @map("product_family_code")
+  productFamilyName String?        @map("product_family_name")
+  targetValue       Decimal        @map("target_value") @db.Decimal(14, 2)
+  periodType        PeriodType     @map("period_type")
+  periodStart       DateTime       @map("period_start") @db.Date
+  periodEnd         DateTime       @map("period_end") @db.Date
+  status            ApprovalStatus @default(DRAFT)
+  submittedBy       String?        @map("submitted_by")
+  approvedBy        String?        @map("approved_by")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  store             StoreMaster    @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+
+  @@index([storeCode, vertical, periodStart, periodEnd])
+  @@index([status, periodType])
+  @@map("target")
+}
+
+model IncentivePlan {
+  id                    Int                    @id @default(autoincrement())
+  planName              String                 @map("plan_name")
+  vertical              Vertical
+  formulaType           FormulaType            @map("formula_type")
+  periodType            PeriodType             @map("period_type")
+  status                ApprovalStatus         @default(DRAFT)
+  version               Int                    @default(1)
+  effectiveFrom         DateTime?              @map("effective_from") @db.Date
+  effectiveTo           DateTime?              @map("effective_to") @db.Date
+  createdBy             String?                @map("created_by")
+  submittedBy           String?                @map("submitted_by")
+  approvedBy            String?                @map("approved_by")
+  rejectionReason       String?                @map("rejection_reason")
+  config                Json?
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+  productIncentiveSlabs ProductIncentiveSlab[]
+  achievementMultipliers AchievementMultiplier[]
+  campaignConfigs       CampaignConfig[]
+  fnlRoleSplits         FnlRoleSplit[]
+  incentiveLedger       IncentiveLedger[]
+
+  @@index([vertical, status, effectiveFrom, effectiveTo])
+  @@map("incentive_plan")
+}
+
+model ProductIncentiveSlab {
+  id               Int          @id @default(autoincrement())
+  planId           Int          @map("plan_id")
+  productFamily    String       @map("product_family")
+  brandFilter      String       @map("brand_filter")
+  priceFrom        Decimal      @map("price_from") @db.Decimal(14, 2)
+  priceTo          Decimal      @map("price_to") @db.Decimal(14, 2)
+  incentivePerUnit Decimal      @map("incentive_per_unit") @db.Decimal(14, 2)
+  effectiveFrom    DateTime?    @map("effective_from") @db.Date
+  effectiveTo      DateTime?    @map("effective_to") @db.Date
+  plan             IncentivePlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([planId, productFamily])
+  @@map("product_incentive_slab")
+}
+
+model AchievementMultiplier {
+  id              Int           @id @default(autoincrement())
+  planId          Int           @map("plan_id")
+  achievementFrom Decimal       @map("achievement_from") @db.Decimal(8, 2)
+  achievementTo   Decimal       @map("achievement_to") @db.Decimal(8, 2)
+  multiplierPct   Decimal       @map("multiplier_pct") @db.Decimal(8, 2)
+  effectiveFrom   DateTime?     @map("effective_from") @db.Date
+  effectiveTo     DateTime?     @map("effective_to") @db.Date
+  plan            IncentivePlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([planId, achievementFrom, achievementTo])
+  @@map("achievement_multiplier")
+}
+
+model CampaignConfig {
+  id               Int                      @id @default(autoincrement())
+  planId           Int                      @map("plan_id")
+  campaignName     String                   @map("campaign_name")
+  startDate        DateTime                 @map("start_date") @db.Date
+  endDate          DateTime                 @map("end_date") @db.Date
+  channel          Channel                  @default(OFFLINE)
+  distributionRule CampaignDistributionRule @default(EQUAL) @map("distribution_rule")
+  status           ApprovalStatus           @default(DRAFT)
+  plan             IncentivePlan            @relation(fields: [planId], references: [id], onDelete: Restrict)
+  articles         CampaignArticle[]
+  storeTargets     CampaignStoreTarget[]
+  payoutSlabs      CampaignPayoutSlab[]
+  incentiveLedger  IncentiveLedger[]
+
+  @@index([planId, status, startDate, endDate])
+  @@map("campaign_config")
+}
+
+model CampaignArticle {
+  id          Int            @id @default(autoincrement())
+  campaignId  Int            @map("campaign_id")
+  articleCode String         @map("article_code")
+  brand       String
+  description String
+  campaign    CampaignConfig @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignId, articleCode])
+  @@map("campaign_article")
+}
+
+model CampaignStoreTarget {
+  id          Int            @id @default(autoincrement())
+  campaignId  Int            @map("campaign_id")
+  storeCode   String         @map("store_code") @db.VarChar(32)
+  targetValue Decimal        @map("target_value") @db.Decimal(14, 2)
+  campaign    CampaignConfig @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  store       StoreMaster    @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+
+  @@unique([campaignId, storeCode])
+  @@map("campaign_store_target")
+}
+
+model CampaignPayoutSlab {
+  id              Int            @id @default(autoincrement())
+  campaignId      Int            @map("campaign_id")
+  achievementFrom Decimal        @map("achievement_from") @db.Decimal(8, 2)
+  achievementTo   Decimal        @map("achievement_to") @db.Decimal(8, 2)
+  perPieceRate    Decimal        @map("per_piece_rate") @db.Decimal(10, 2)
+  campaign        CampaignConfig @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+
+  @@index([campaignId, achievementFrom, achievementTo])
+  @@map("campaign_payout_slab")
+}
+
+model FnlRoleSplit {
+  id               Int           @id @default(autoincrement())
+  planId           Int           @map("plan_id")
+  numSms           Int           @map("num_sms")
+  numDms           Int           @map("num_dms")
+  saPoolPct        Decimal       @map("sa_pool_pct") @db.Decimal(8, 2)
+  smSharePct       Decimal       @map("sm_share_pct") @db.Decimal(8, 2)
+  dmSharePerDmPct  Decimal       @default(0) @map("dm_share_per_dm_pct") @db.Decimal(8, 2)
+  plan             IncentivePlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, numSms, numDms])
+  @@map("fnl_role_split")
+}
+
+model IncentiveLedger {
+  id                 Int               @id @default(autoincrement())
+  planId             Int               @map("plan_id")
+  campaignId         Int?              @map("campaign_id")
+  employeeId         String            @map("employee_id") @db.VarChar(64)
+  storeCode          String            @map("store_code") @db.VarChar(32)
+  vertical           Vertical
+  periodStart        DateTime          @map("period_start") @db.Date
+  periodEnd          DateTime          @map("period_end") @db.Date
+  baseIncentive      Decimal           @default(0) @map("base_incentive") @db.Decimal(14, 2)
+  multiplierApplied  Decimal?          @map("multiplier_applied") @db.Decimal(8, 2)
+  achievementPct     Decimal?          @map("achievement_pct") @db.Decimal(8, 2)
+  finalIncentive     Decimal           @default(0) @map("final_incentive") @db.Decimal(14, 2)
+  calculationDetails Json?             @map("calculation_details")
+  calculationStatus  CalculationStatus @default(IN_PROGRESS) @map("calculation_status")
+  calculatedAt       DateTime          @default(now()) @map("calculated_at")
+  plan               IncentivePlan     @relation(fields: [planId], references: [id], onDelete: Restrict)
+  campaign           CampaignConfig?   @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  employee           EmployeeMaster    @relation(fields: [employeeId], references: [employeeId], onDelete: Restrict)
+  store              StoreMaster       @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+
+  @@index([storeCode, vertical, periodStart, periodEnd])
+  @@index([employeeId, periodStart, periodEnd])
+  @@map("incentive_ledger")
+}
+
+model AuditLog {
+  id          Int             @id @default(autoincrement())
+  entityType  AuditEntityType @map("entity_type")
+  entityId    Int             @map("entity_id")
+  action      AuditAction
+  oldValue    Json?           @map("old_value")
+  newValue    Json?           @map("new_value")
+  performedBy String          @default("system") @map("performed_by")
+  performedAt DateTime        @default(now()) @map("performed_at")
+
+  @@index([entityType, entityId, performedAt])
+  @@map("audit_log")
+}
