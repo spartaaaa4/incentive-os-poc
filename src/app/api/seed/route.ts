@@ -12,6 +12,7 @@ import {
   Vertical,
 } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
+import { recalculateIncentives } from "@/server/calculations/engines";
 
 let sequence = 1;
 function nextId(prefix: string): string {
@@ -139,12 +140,14 @@ export async function POST() {
       [new Date("2026-04-19"), new Date("2026-04-25"), 1250000],
       [new Date("2026-04-26"), new Date("2026-05-02"), 1000000],
     ];
-    const electronicsDepartments = [["IT", "FF01", "Laptop"], ["IT", "FF03", "Tablet"], ["ENT", "FH01", "High End TV"], ["ENT", "FH07", "Photography"], ["Telecom", "FK01", "Wireless Phone"], ["Large Appliances", "FJ03", "Laundry & Wash Care"]];
+    const electronicsDeptTargets = [
+      ["IT", 1800000], ["ENT", 1600000], ["Telecom", 2200000], ["Large Appliances", 1400000],
+    ] as const;
 
     const targetRows: Prisma.TargetCreateManyInput[] = [];
     for (const store of stores.filter((s) => s.vertical === Vertical.ELECTRONICS)) {
-      for (const dept of electronicsDepartments) {
-        targetRows.push({ storeCode: store.storeCode, vertical: Vertical.ELECTRONICS, department: dept[0], productFamilyCode: dept[1], productFamilyName: dept[2], targetValue: 600000 + Math.round(Math.random() * 400000), periodType: PeriodType.MONTHLY, periodStart: aprilStart, periodEnd: aprilEnd, status: ApprovalStatus.ACTIVE, submittedBy: "maker", approvedBy: "checker" });
+      for (const [dept, baseTarget] of electronicsDeptTargets) {
+        targetRows.push({ storeCode: store.storeCode, vertical: Vertical.ELECTRONICS, department: dept, productFamilyCode: null, productFamilyName: null, targetValue: baseTarget + Math.round(Math.random() * 400000), periodType: PeriodType.MONTHLY, periodStart: aprilStart, periodEnd: aprilEnd, status: ApprovalStatus.ACTIVE, submittedBy: "maker", approvedBy: "checker" });
       }
     }
     for (const [sc, tv] of [["2536", 67000], ["TGL5", 226000], ["T28V", 167000]] as const) {
@@ -187,7 +190,7 @@ export async function POST() {
 
     for (const store of stores.filter((s) => s.vertical === Vertical.ELECTRONICS)) {
       const ids = empByStore.get(store.storeCode) ?? [];
-      for (let i = 0; i < 320; i++) {
+      for (let i = 0; i < 80; i++) {
         const f = elecFamilies[Math.floor(rand() * elecFamilies.length)];
         const qty = rand() > 0.8 ? 2 : 1;
         const up = Math.round(f.min + rand() * (f.max - f.min));
@@ -201,7 +204,7 @@ export async function POST() {
     for (const sc of ["2536", "TGL5", "T28V"]) {
       const store = stores.find((s) => s.storeCode === sc)!;
       const ids = empByStore.get(sc) ?? [];
-      for (let i = 0; i < 180; i++) {
+      for (let i = 0; i < 60; i++) {
         const a = groceryArticles[Math.floor(rand() * groceryArticles.length)];
         const qty = 1 + Math.floor(rand() * 3); const up = 120 + Math.round(rand() * 280);
         const ga = qty * up; const tax = Math.round(ga * 0.05);
@@ -210,7 +213,7 @@ export async function POST() {
     }
     for (const store of stores.filter((s) => s.vertical === Vertical.FNL)) {
       const ids = empByStore.get(store.storeCode) ?? [];
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < 80; i++) {
         const qty = 1 + Math.floor(rand() * 2); const up = 800 + Math.round(rand() * 4200);
         const ga = qty * up; const tax = Math.round(ga * 0.12);
         salesRows.push({ transactionId: nextId("TXF"), transactionDate: addDays(aprilStart, Math.floor(rand() * 30)), storeCode: store.storeCode, vertical: Vertical.FNL, storeFormat: store.storeFormat, employeeId: ids[Math.floor(rand() * ids.length)] ?? null, department: "APPAREL", articleCode: `FNL${Math.floor(100000 + rand() * 899999)}`, productFamilyCode: "FNL01", brand: ["Netplay", "Avaasa", "DNMX"][Math.floor(rand() * 3)], quantity: qty, grossAmount: ga, taxAmount: tax, totalAmount: ga + tax, transactionType: TransactionType.NORMAL, channel: rand() > 0.9 ? Channel.ONLINE : Channel.OFFLINE });
@@ -218,9 +221,14 @@ export async function POST() {
     }
     await db.salesTransaction.createMany({ data: salesRows, skipDuplicates: true });
 
+    const allStoreCodes = stores.map((s) => s.storeCode);
+    await recalculateIncentives({ storeCodes: allStoreCodes, periodStart: aprilStart, periodEnd: aprilEnd });
+
+    const ledgerCount = await db.incentiveLedger.count();
+
     return NextResponse.json({
-      message: "Seed complete",
-      stats: { stores: stores.length, employees: employeeRows.length, sales: salesRows.length, targets: targetRows.length, attendance: attendanceRows.length },
+      message: "Seed complete — incentives calculated",
+      stats: { stores: stores.length, employees: employeeRows.length, sales: salesRows.length, targets: targetRows.length, attendance: attendanceRows.length, ledgerRows: ledgerCount },
     });
   } catch (error) {
     console.error("Seed error:", error);
