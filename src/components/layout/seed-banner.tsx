@@ -36,7 +36,7 @@ export function SeedBanner() {
   const runSeed = async () => {
     setSeeding(true);
     try {
-      const res = await fetch("/api/seed", { method: "POST" });
+      const res = await fetch("/api/seed?force=true", { method: "POST" });
       if (res.ok) {
         setDone(true);
         setEmpty(false);
@@ -53,13 +53,13 @@ export function SeedBanner() {
       <div className="flex items-center gap-3">
         <Database size={20} className="text-amber-600" />
         <div>
-          <p className="text-sm font-medium text-amber-900">Database is empty</p>
-          <p className="text-xs text-amber-700">Load demo data with 15 stores, 255 employees, ~3,300 sales transactions, targets, and pre-configured incentive rules.</p>
+          <p className="text-sm font-medium text-amber-900">Demo data missing or incomplete</p>
+          <p className="text-xs text-amber-700">Load/reset demo data: 15 stores, 255 employees, ~3,300 sales transactions, targets, incentive rules, and calculated ledger.</p>
         </div>
       </div>
       <button onClick={() => void runSeed()} disabled={seeding}
         className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors whitespace-nowrap">
-        {seeding ? <><Loader2 size={14} className="animate-spin" /> Seeding...</> : "Load Demo Data"}
+        {seeding ? <><Loader2 size={14} className="animate-spin" /> Seeding...</> : "Reset & Load Demo Data"}
       </button>
     </div>
   );
