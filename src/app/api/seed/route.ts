@@ -71,6 +71,22 @@ const electronicsSlabs = [
   ["Large Washing Machines (LWC)", "IFB only", 500, 20000, 25], ["Large Washing Machines (LWC)", "IFB only", 20001, 35000, 50], ["Large Washing Machines (LWC)", "IFB only", 35001, 999999, 75],
 ];
 
+export async function GET() {
+  try {
+    const [storeCount, ledgerCount] = await Promise.all([
+      db.storeMaster.count(),
+      db.incentiveLedger.count(),
+    ]);
+    return NextResponse.json({
+      storeCount,
+      ledgerCount,
+      needsReseed: storeCount === 0 || (storeCount > 0 && ledgerCount === 0),
+    });
+  } catch {
+    return NextResponse.json({ storeCount: 0, ledgerCount: 0, needsReseed: true });
+  }
+}
+
 export async function POST(request: Request) {
   try {
     if (process.env.ENABLE_SEED !== "true") {
@@ -99,7 +115,17 @@ export async function POST(request: Request) {
     }
 
     const existingStores = await db.storeMaster.count();
-    if (existingStores > 0) {
+    if (existingStores > 0 && !force) {
+      // Data exists but ledger might be empty — run calculation recovery
+      const ledgerCount = await db.incentiveLedger.count();
+      if (ledgerCount === 0) {
+        const allStoreCodes = (await db.storeMaster.findMany({ select: { storeCode: true } })).map((s) => s.storeCode);
+        const aprilStart = new Date("2026-04-01");
+        const aprilEnd = new Date("2026-04-30");
+        await recalculateIncentives({ storeCodes: allStoreCodes, periodStart: aprilStart, periodEnd: aprilEnd });
+        const newLedgerCount = await db.incentiveLedger.count();
+        return NextResponse.json({ message: "Incentives recalculated on existing data", stats: { ledgerRows: newLedgerCount } });
+      }
       return NextResponse.json({ message: "Database already has data. Use ?force=true to reseed." }, { status: 200 });
     }
 

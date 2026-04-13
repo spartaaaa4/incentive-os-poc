@@ -9,11 +9,9 @@ export function SeedBanner() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    fetch("/api/dashboard")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!d || d.stats?.stores === 0 || (d.stats?.stores > 0 && d.stats?.totalIncentiveMtd === 0)) setEmpty(true);
-      })
+    fetch("/api/seed")
+      .then((r) => (r.ok ? r.json() : { needsReseed: true }))
+      .then((d) => { if (d.needsReseed) setEmpty(true); })
       .catch(() => setEmpty(true));
   }, []);
 
