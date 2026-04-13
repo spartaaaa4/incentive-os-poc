@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
+import { Download, Upload, X, FileSpreadsheet, AlertCircle, CheckCircle2 } from "lucide-react";
 import { formatInr } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/status-badge";
 
@@ -39,6 +40,9 @@ export function TargetsView() {
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([]);
   const [csvErrors, setCsvErrors] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -52,6 +56,7 @@ export function TargetsView() {
   useEffect(() => { load(); }, [load]);
 
   const handleFile = async (file: File) => {
+    setFileName(file.name);
     const text = await file.text();
     const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
     const normalized = parsed.data.map((row) => {
@@ -62,6 +67,30 @@ export function TargetsView() {
     const missing = expectedColumns[active].filter((c) => !Object.keys(normalized[0] ?? {}).includes(c));
     setCsvRows(normalized);
     setCsvErrors(missing.length ? [`Missing columns: ${missing.join(", ")}`] : []);
+  };
+
+  const downloadTemplate = () => {
+    const cols = expectedColumns[active];
+    const sampleByTab: Record<Tab, string[]> = {
+      Electronics: ["3675", "ELECTRONICS", "IT", "FF01", "Laptop", "888104", "MONTHLY", "2026-04-01", "2026-04-30"],
+      Grocery: ["2536", "GROCERY", "67000", "CAMPAIGN", "2026-04-15", "2026-04-25"],
+      "F&L": ["FL01", "FNL", "1200000", "WEEKLY", "2026-04-05", "2026-04-11"],
+    };
+    const csv = cols.join(",") + "\n" + sampleByTab[active].join(",") + "\n";
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${active.toLowerCase()}_targets_template.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const resetModal = () => {
+    setShowUpload(false);
+    setCsvRows([]);
+    setCsvErrors([]);
+    setFileName("");
   };
 
   const importCsv = async () => {
@@ -97,8 +126,9 @@ export function TargetsView() {
             </button>
           ))}
         </div>
-        <button onClick={() => setShowUpload(true)} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white">
-          Upload Targets CSV
+        <button onClick={() => setShowUpload(true)}
+          className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+          <Upload size={14} /> Upload Targets CSV
         </button>
       </div>
 
@@ -136,42 +166,122 @@ export function TargetsView() {
       </div>
 
       {showUpload && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
-          <div className="w-full max-w-3xl rounded-xl bg-white p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Upload {active} Targets CSV</h3>
-              <button className="text-slate-500" onClick={() => setShowUpload(false)}>Close</button>
-            </div>
-            <input type="file" accept=".csv,text/csv" onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); }} />
-            <div className="text-sm text-slate-600">
-              <p>Expected columns: {expectedColumns[active].join(", ")}</p>
-              <p>Total rows: {csvRows.length} | Errors: {csvErrors.length}</p>
-            </div>
-            {csvErrors.length > 0 && (
-              <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                {csvErrors.map((e) => <p key={e}>{e}</p>)}
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="w-full max-w-3xl max-h-[90vh] rounded-2xl bg-white shadow-2xl flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Upload {active} Targets</h3>
+                <p className="text-xs text-slate-500 mt-0.5">All uploaded targets enter SUBMITTED status for maker-checker approval</p>
               </div>
-            )}
-            {previewRows.length > 0 && (
-              <div className="overflow-x-auto border border-slate-200 rounded-md">
-                <table className="w-full text-xs">
-                  <thead className="bg-slate-50">
-                    <tr>{expectedColumns[active].map((c) => <th key={c} className="px-2 py-2 text-left">{c}</th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {previewRows.map((row, i) => (
-                      <tr key={i} className="border-t border-slate-100">
-                        {expectedColumns[active].map((c) => <td key={c} className="px-2 py-1">{row[c] ?? ""}</td>)}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <button onClick={resetModal} className="rounded-lg p-1.5 hover:bg-slate-100 transition-colors">
+                <X size={18} className="text-slate-500" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-medium text-slate-900">Prepare your file</h4>
+                  <button onClick={downloadTemplate}
+                    className="flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+                    <Download size={12} /> Download Template
+                  </button>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                  <p className="font-medium text-slate-700 mb-1">Required columns:</p>
+                  <p className="font-mono">{expectedColumns[active].join(", ")}</p>
+                </div>
               </div>
-            )}
-            <div className="flex justify-end">
+
+              <div
+                className={`relative rounded-xl border-2 border-dashed transition-colors cursor-pointer ${
+                  dragging ? "border-blue-400 bg-blue-50" : fileName ? "border-emerald-300 bg-emerald-50/50" : "border-slate-300 bg-white hover:border-slate-400"
+                } p-8 text-center`}
+                onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) void handleFile(f); }}
+                onClick={() => fileRef.current?.click()}
+              >
+                <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); }} />
+                {fileName ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <FileSpreadsheet size={32} className="text-emerald-600" />
+                    <p className="text-sm font-medium text-slate-900">{fileName}</p>
+                    <p className="text-xs text-slate-500">{csvRows.length} rows parsed</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-2">
+                    <Upload size={32} className="text-slate-400" />
+                    <p className="text-sm text-slate-600"><span className="font-medium text-blue-600">Click to browse</span> or drag and drop</p>
+                    <p className="text-xs text-slate-400">CSV files only</p>
+                  </div>
+                )}
+              </div>
+
+              {csvRows.length > 0 && (
+                <div>
+                  <div className="flex gap-3 mb-3">
+                    <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-2 text-sm">
+                      <FileSpreadsheet size={14} className="text-slate-500" />
+                      <span className="text-slate-600">{csvRows.length} rows</span>
+                    </div>
+                    {csvErrors.length === 0 ? (
+                      <div className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-sm">
+                        <CheckCircle2 size={14} className="text-emerald-600" />
+                        <span className="text-emerald-700">Ready to import</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 rounded-lg bg-red-50 px-3 py-2 text-sm">
+                        <AlertCircle size={14} className="text-red-600" />
+                        <span className="text-red-700">{csvErrors.length} error(s)</span>
+                      </div>
+                    )}
+                  </div>
+                  {csvErrors.length > 0 && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 mb-3">
+                      {csvErrors.map((e) => <p key={e} className="flex items-start gap-1.5"><AlertCircle size={12} className="mt-0.5 shrink-0" /> {e}</p>)}
+                    </div>
+                  )}
+                  <div className="overflow-x-auto rounded-lg border border-slate-200">
+                    <table className="w-full text-xs">
+                      <thead className="bg-slate-50 text-slate-500">
+                        <tr>
+                          <th className="px-2 py-2 text-left text-[10px] font-medium">#</th>
+                          {expectedColumns[active].map((c) => (
+                            <th key={c} className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wider">{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewRows.map((row, i) => (
+                          <tr key={i} className="border-t border-slate-100">
+                            <td className="px-2 py-1.5 text-slate-400">{i + 1}</td>
+                            {expectedColumns[active].map((c) => (
+                              <td key={c} className="px-2 py-1.5 text-slate-700">{row[c] ?? ""}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {csvRows.length > 5 && (
+                      <div className="border-t border-slate-100 px-3 py-2 text-xs text-slate-400 text-center">
+                        Showing 5 of {csvRows.length} rows
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200 bg-slate-50/50">
+              <button onClick={resetModal}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+                Cancel
+              </button>
               <button onClick={() => void importCsv()} disabled={importing || csvRows.length === 0 || csvErrors.length > 0}
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
-                {importing ? "Importing..." : "Import"}
+                className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {importing ? "Importing..." : `Import ${csvRows.length > 0 ? csvRows.length + " rows" : ""}`}
               </button>
             </div>
           </div>

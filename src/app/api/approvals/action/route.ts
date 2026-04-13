@@ -37,18 +37,16 @@ export async function POST(request: Request) {
         });
       }
     } else if (entityType === "TARGET") {
-      const anchor = await db.target.findUnique({ where: { id: entityId } });
-      if (!anchor || anchor.status !== "SUBMITTED") {
-        return NextResponse.json({ error: "Target not in SUBMITTED status" }, { status: 400 });
+      const refTarget = await db.target.findUnique({ where: { id: entityId } });
+      if (!refTarget || refTarget.status !== "SUBMITTED") {
+        return NextResponse.json({ error: "Target group not in SUBMITTED status" }, { status: 400 });
       }
 
       await db.target.updateMany({
         where: {
           status: "SUBMITTED",
-          vertical: anchor.vertical,
-          periodType: anchor.periodType,
-          periodStart: anchor.periodStart,
-          periodEnd: anchor.periodEnd,
+          vertical: refTarget.vertical,
+          periodType: refTarget.periodType,
         },
         data: {
           status: newStatus,
