@@ -227,7 +227,7 @@ async function getEmployeeDetail(params: Params) {
 
   const ledgerRows = await db.incentiveLedger.findMany({
     where: { employeeId: params.employeeId!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd } },
-    include: { plan: { include: { achievementMultipliers: true, fnlRoleSplits: true } } },
+    include: { plan: { include: { achievementMultipliers: true, fnlRoleSplits: true, productIncentiveSlabs: true } } },
     orderBy: { periodStart: "desc" },
   });
 
@@ -247,6 +247,35 @@ async function getEmployeeDetail(params: Params) {
   if (vertical === "ELECTRONICS") return buildElectronicsDetail(employee, ledgerRows, params);
   if (vertical === "GROCERY") return buildGroceryDetail(employee, ledgerRows, params);
   return buildFnlDetail(employee, ledgerRows, params);
+}
+
+const familyCodeToName: Record<string, string> = {
+  FF01: "Laptops & Desktops", FF03: "Tablets", FH07: "Photography",
+  FK01: "Wireless Phones", FH01: "Home Entertainment TVs", FJ03: "Large Appliances",
+};
+
+function isElectronicsExcluded(brand: string | null, familyCode: string | null): boolean {
+  const b = (brand ?? "").toLowerCase();
+  if (b.includes("apple")) return true;
+  if (familyCode === "FK01" && b.includes("oneplus")) return true;
+  if (familyCode === "FF01" && b.includes("surface")) return true;
+  return false;
+}
+
+function brandMatches(brandFilter: string, brand: string | null): boolean {
+  if (!brand) return false;
+  const normalized = brand.toLowerCase();
+  const filter = brandFilter.toLowerCase();
+  if (filter.includes("all brands")) {
+    if (filter.includes("excl")) {
+      for (const excl of ["apple", "surface", "oneplus", "mi", "realme", "ifb"]) {
+        if (filter.includes(excl) && normalized.includes(excl)) return false;
+      }
+    }
+    return true;
+  }
+  if (filter.includes("others")) return true;
+  return filter.split(",").map((v) => v.trim()).some((token) => normalized.includes(token));
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -278,6 +307,48 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
     achievementPct: Math.round(d.achievementPct * 10) / 10,
   }));
 
+  // Per-transaction sales breakdown with incentive earned
+  const plan = row.plan;
+  const slabs = plan.productIncentiveSlabs ?? [];
+  const txns = await db.salesTransaction.findMany({
+    where: {
+      employeeId: employee.employeeId,
+      storeCode: employee.storeCode,
+      vertical: "ELECTRONICS",
+      transactionDate: { gte: params.periodStart, lte: params.periodEnd },
+      channel: "OFFLINE",
+      transactionType: "NORMAL",
+    },
+    orderBy: { transactionDate: "desc" },
+    take: 25,
+  });
+
+  const recentSales = txns.map((txn) => {
+    const unitPrice = asNumber(txn.grossAmount) / (txn.quantity || 1);
+    const familyName = familyCodeToName[txn.productFamilyCode ?? ""] ?? txn.productFamilyCode ?? "Other";
+    const excluded = isElectronicsExcluded(txn.brand, txn.productFamilyCode);
+    let incentiveEarned = 0;
+    if (!excluded && txn.productFamilyCode) {
+      const slab = slabs.find(
+        (s: { productFamily: string; brandFilter: string; priceFrom: unknown; priceTo: unknown }) =>
+          s.productFamily.toLowerCase().includes(familyName.toLowerCase().replace(" & ", " ")) &&
+          brandMatches(s.brandFilter, txn.brand) &&
+          unitPrice >= asNumber(s.priceFrom) && unitPrice <= asNumber(s.priceTo),
+      );
+      if (slab) incentiveEarned = asNumber((slab as { incentivePerUnit: unknown }).incentivePerUnit) * txn.quantity;
+    }
+    return {
+      date: txn.transactionDate.toISOString().slice(0, 10),
+      brand: txn.brand ?? "—",
+      productFamily: familyName,
+      articleCode: txn.articleCode,
+      quantity: txn.quantity,
+      unitPrice: Math.round(unitPrice),
+      grossAmount: Math.round(asNumber(txn.grossAmount)),
+      incentiveEarned: Math.round(incentiveEarned),
+    };
+  });
+
   return {
     level: "employeeDetail" as const,
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
@@ -286,6 +357,7 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
     currentStanding: { storeTarget: Math.round(storeTarget), storeActual: Math.round(storeActual), achievementPct, currentMultiplierPct: currentMultiplier, baseIncentive: Math.round(base), finalIncentive: Math.round(final) },
     departments: deptBreakdown,
     multiplierTiers: multipliers,
+    recentSales,
     message: `Store is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
   };
 }
@@ -330,6 +402,38 @@ async function buildGroceryDetail(employee: any, ledgerRows: any[], params: Para
 
   const salesNeeded = next && targetValue > 0 ? Math.round(targetValue * (next.from / 100)) - Math.round(targetValue * (achievementPct / 100)) : 0;
 
+  // Fetch employee's recent sales for the campaign period
+  const campaignArticles = campaign
+    ? await db.campaignArticle.findMany({ where: { campaignId: campaign.id }, select: { articleCode: true, description: true, brand: true } })
+    : [];
+  const articleDescMap = new Map(campaignArticles.map((a) => [a.articleCode, { description: a.description, brand: a.brand }]));
+
+  const empSales = campaign
+    ? await db.salesTransaction.findMany({
+        where: {
+          employeeId: employee.employeeId,
+          storeCode: employee.storeCode,
+          vertical: "GROCERY",
+          transactionDate: { gte: campaign.startDate, lte: campaign.endDate },
+          channel: "OFFLINE",
+        },
+        orderBy: { transactionDate: "desc" },
+        take: 25,
+      })
+    : [];
+
+  const recentSales = empSales.map((txn) => {
+    const articleInfo = articleDescMap.get(txn.articleCode);
+    return {
+      date: txn.transactionDate.toISOString().slice(0, 10),
+      brand: articleInfo?.brand ?? txn.brand ?? "—",
+      articleCode: txn.articleCode,
+      description: articleInfo?.description ?? txn.articleCode,
+      quantity: txn.quantity,
+      grossAmount: Math.round(asNumber(txn.grossAmount)),
+    };
+  });
+
   return {
     level: "employeeDetail" as const,
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
@@ -342,6 +446,7 @@ async function buildGroceryDetail(employee: any, ledgerRows: any[], params: Para
       totalStorePayout: Math.round(totalStorePayout), employeeCount, yourPayout: Math.round(yourPayout),
     },
     payoutSlabs,
+    recentSales,
     message: `Store is at ${Math.round(achievementPct * 10) / 10}% of target. Current rate: ₹${rate}/piece (${fmtInr(Math.round(yourPayout))} your share).${nudge ? " " + nudge : ""}${salesNeeded > 0 ? ` Store needs ${fmtInr(salesNeeded)} more in sales.` : ""}`,
   };
 }

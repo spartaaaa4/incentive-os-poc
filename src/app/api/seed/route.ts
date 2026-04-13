@@ -178,7 +178,7 @@ export async function POST(request: Request) {
       data: { planId: groPlan.id, campaignName: "Kerala Cakes April Drive", startDate: new Date("2026-04-15"), endDate: new Date("2026-04-25"), channel: Channel.OFFLINE, distributionRule: "EQUAL", status: ApprovalStatus.ACTIVE },
     });
     await db.campaignArticle.createMany({ data: groceryArticles.map((a) => ({ campaignId: campaign.id, brand: a[0], articleCode: a[1], description: a[2] })) });
-    await db.campaignStoreTarget.createMany({ data: [{ campaignId: campaign.id, storeCode: "2536", targetValue: 18000 }, { campaignId: campaign.id, storeCode: "TGL5", targetValue: 22000 }, { campaignId: campaign.id, storeCode: "T28V", targetValue: 15000 }] });
+    await db.campaignStoreTarget.createMany({ data: [{ campaignId: campaign.id, storeCode: "2536", targetValue: 48000 }, { campaignId: campaign.id, storeCode: "TGL5", targetValue: 55000 }, { campaignId: campaign.id, storeCode: "T28V", targetValue: 42000 }] });
     await db.campaignPayoutSlab.createMany({ data: [[100, 119.99, 2], [120, 129.99, 3], [130, 999, 4]].map((r) => ({ campaignId: campaign.id, achievementFrom: r[0], achievementTo: r[1], perPieceRate: r[2] })) });
 
     const fnlPlan = await db.incentivePlan.create({
@@ -191,27 +191,27 @@ export async function POST(request: Request) {
     const aprilStart = new Date("2026-04-01");
     const aprilEnd = new Date("2026-04-30");
     const weeklySpans: [Date, Date, number][] = [
-      [new Date("2026-04-05"), new Date("2026-04-11"), 180000],
-      [new Date("2026-04-12"), new Date("2026-04-18"), 220000],
-      [new Date("2026-04-19"), new Date("2026-04-25"), 250000],
-      [new Date("2026-04-26"), new Date("2026-05-02"), 200000],
+      [new Date("2026-04-05"), new Date("2026-04-11"), 95000],
+      [new Date("2026-04-12"), new Date("2026-04-18"), 105000],
+      [new Date("2026-04-19"), new Date("2026-04-25"), 115000],
+      [new Date("2026-04-26"), new Date("2026-05-02"), 100000],
     ];
     const electronicsDeptTargets = [
-      ["IT", 450000], ["ENT", 400000], ["Telecom", 500000], ["Large Appliances", 350000],
+      ["IT", 850000], ["ENT", 750000], ["Telecom", 700000], ["Large Appliances", 550000],
     ] as const;
 
     const targetRows: Prisma.TargetCreateManyInput[] = [];
     for (const store of stores.filter((s) => s.vertical === Vertical.ELECTRONICS)) {
       for (const [dept, baseTarget] of electronicsDeptTargets) {
-        targetRows.push({ storeCode: store.storeCode, vertical: Vertical.ELECTRONICS, department: dept, productFamilyCode: null, productFamilyName: null, targetValue: baseTarget + Math.round(Math.random() * 100000), periodType: PeriodType.MONTHLY, periodStart: aprilStart, periodEnd: aprilEnd, status: ApprovalStatus.ACTIVE, submittedBy: "maker", approvedBy: "checker" });
+        targetRows.push({ storeCode: store.storeCode, vertical: Vertical.ELECTRONICS, department: dept, productFamilyCode: null, productFamilyName: null, targetValue: baseTarget + Math.round(Math.random() * 200000), periodType: PeriodType.MONTHLY, periodStart: aprilStart, periodEnd: aprilEnd, status: ApprovalStatus.ACTIVE, submittedBy: "maker", approvedBy: "checker" });
       }
     }
-    for (const [sc, tv] of [["2536", 18000], ["TGL5", 22000], ["T28V", 15000]] as const) {
+    for (const [sc, tv] of [["2536", 48000], ["TGL5", 55000], ["T28V", 42000]] as const) {
       targetRows.push({ storeCode: sc, vertical: Vertical.GROCERY, department: null, productFamilyCode: null, productFamilyName: "Campaign Target", targetValue: tv, periodType: PeriodType.CAMPAIGN, periodStart: new Date("2026-04-15"), periodEnd: new Date("2026-04-25"), status: ApprovalStatus.ACTIVE, submittedBy: "maker", approvedBy: "checker" });
     }
     for (const store of stores.filter((s) => s.vertical === Vertical.FNL)) {
       for (const [ws, we, base] of weeklySpans) {
-        targetRows.push({ storeCode: store.storeCode, vertical: Vertical.FNL, department: null, productFamilyCode: null, productFamilyName: "Weekly Store Target", targetValue: base + Math.round(Math.random() * 40000), periodType: PeriodType.WEEKLY, periodStart: ws, periodEnd: we, status: ApprovalStatus.ACTIVE, submittedBy: "maker", approvedBy: "checker" });
+        targetRows.push({ storeCode: store.storeCode, vertical: Vertical.FNL, department: null, productFamilyCode: null, productFamilyName: "Weekly Store Target", targetValue: base + Math.round(Math.random() * 20000), periodType: PeriodType.WEEKLY, periodStart: ws, periodEnd: we, status: ApprovalStatus.ACTIVE, submittedBy: "maker", approvedBy: "checker" });
       }
     }
     await db.target.createMany({ data: targetRows });
@@ -246,7 +246,7 @@ export async function POST(request: Request) {
 
     for (const store of stores.filter((s) => s.vertical === Vertical.ELECTRONICS)) {
       const ids = empByStore.get(store.storeCode) ?? [];
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < 120; i++) {
         const f = elecFamilies[Math.floor(rand() * elecFamilies.length)];
         const qty = rand() > 0.8 ? 2 : 1;
         const up = Math.round(f.min + rand() * (f.max - f.min));
@@ -269,7 +269,7 @@ export async function POST(request: Request) {
     }
     for (const store of stores.filter((s) => s.vertical === Vertical.FNL)) {
       const ids = empByStore.get(store.storeCode) ?? [];
-      for (let i = 0; i < 150; i++) {
+      for (let i = 0; i < 100; i++) {
         const qty = 1 + Math.floor(rand() * 2); const up = 800 + Math.round(rand() * 4200);
         const ga = qty * up; const tax = Math.round(ga * 0.12);
         salesRows.push({ transactionId: nextId("TXF"), transactionDate: addDays(aprilStart, Math.floor(rand() * 30)), storeCode: store.storeCode, vertical: Vertical.FNL, storeFormat: store.storeFormat, employeeId: ids[Math.floor(rand() * ids.length)] ?? null, department: "APPAREL", articleCode: `FNL${Math.floor(100000 + rand() * 899999)}`, productFamilyCode: "FNL01", brand: ["Netplay", "Avaasa", "DNMX"][Math.floor(rand() * 3)], quantity: qty, grossAmount: ga, taxAmount: tax, totalAmount: ga + tax, transactionType: TransactionType.NORMAL, channel: rand() > 0.9 ? Channel.ONLINE : Channel.OFFLINE });

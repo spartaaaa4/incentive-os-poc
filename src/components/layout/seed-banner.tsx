@@ -7,6 +7,7 @@ export function SeedBanner() {
   const [empty, setEmpty] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/seed")
@@ -16,8 +17,6 @@ export function SeedBanner() {
   }, []);
 
   if (!empty || done) return null;
-
-  const [error, setError] = useState<string | null>(null);
 
   const runSeed = async () => {
     setSeeding(true);

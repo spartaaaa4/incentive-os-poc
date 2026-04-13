@@ -1,4 +1,4 @@
-import { startOfMonth } from "date-fns";
+import { startOfMonth, format, addDays, differenceInDays } from "date-fns";
 import { Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
 
@@ -12,6 +12,7 @@ function asNumber(value: unknown): number {
 
 export async function getDashboardData(vertical?: Vertical) {
   const monthStart = startOfMonth(new Date("2026-04-13"));
+  const monthEnd = new Date("2026-04-30");
   const verticalWhere = vertical ? { vertical } : {};
 
   const [
@@ -19,16 +20,22 @@ export async function getDashboardData(vertical?: Vertical) {
     employeeCount,
     activeSchemes,
     totalIncentiveAgg,
+    totalSalesAgg,
     topPerformers,
     pendingApprovalTargets,
     pendingApprovalPlans,
     storeTargets,
     storeSalesAgg,
     storeLedgerAgg,
+    dailySalesRaw,
+    verticalStores,
+    verticalEmployees,
+    verticalSales,
+    verticalLedger,
   ] = await Promise.all([
     db.storeMaster.findMany({
       where: verticalWhere,
-      select: { storeCode: true, storeName: true, storeFormat: true, _count: { select: { employees: true } } },
+      select: { storeCode: true, storeName: true, storeFormat: true, vertical: true, _count: { select: { employees: true } } },
     }),
     db.employeeMaster.count({
       where: { payrollStatus: "ACTIVE", ...(vertical ? { store: { vertical } } : {}) },
@@ -38,7 +45,11 @@ export async function getDashboardData(vertical?: Vertical) {
     }),
     db.incentiveLedger.aggregate({
       where: { periodStart: { gte: monthStart }, ...verticalWhere },
-      _sum: { finalIncentive: true },
+      _sum: { finalIncentive: true, baseIncentive: true },
+    }),
+    db.salesTransaction.aggregate({
+      where: { transactionDate: { gte: monthStart }, ...verticalWhere },
+      _sum: { grossAmount: true },
     }),
     db.incentiveLedger.groupBy({
       by: ["employeeId", "storeCode"] as const,
@@ -51,12 +62,12 @@ export async function getDashboardData(vertical?: Vertical) {
     db.incentivePlan.count({ where: { status: "SUBMITTED" } }),
     db.target.findMany({
       where: {
-        periodStart: { lte: new Date() },
+        periodStart: { lte: monthEnd },
         periodEnd: { gte: monthStart },
         status: "ACTIVE",
         ...verticalWhere,
       },
-      select: { storeCode: true, targetValue: true },
+      select: { storeCode: true, targetValue: true, vertical: true },
     }),
     db.salesTransaction.groupBy({
       by: ["storeCode"] as const,
@@ -71,7 +82,34 @@ export async function getDashboardData(vertical?: Vertical) {
     db.incentiveLedger.groupBy({
       by: ["storeCode"] as const,
       where: { periodStart: { gte: monthStart }, ...verticalWhere },
-      _sum: { finalIncentive: true },
+      _sum: { finalIncentive: true, baseIncentive: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["transactionDate"] as const,
+      where: { transactionDate: { gte: monthStart, lte: monthEnd }, ...verticalWhere },
+      _sum: { grossAmount: true },
+      _count: true,
+      orderBy: { transactionDate: "asc" },
+    }),
+    // Vertical breakdown queries (unfiltered)
+    db.storeMaster.groupBy({
+      by: ["vertical"] as const,
+      _count: true,
+    }),
+    db.employeeMaster.groupBy({
+      by: ["storeCode"] as const,
+      where: { payrollStatus: "ACTIVE" },
+      _count: true,
+    }),
+    db.salesTransaction.groupBy({
+      by: ["vertical"] as const,
+      where: { transactionDate: { gte: monthStart } },
+      _sum: { grossAmount: true },
+    }),
+    db.incentiveLedger.groupBy({
+      by: ["vertical"] as const,
+      where: { periodStart: { gte: monthStart } },
+      _sum: { finalIncentive: true, baseIncentive: true },
     }),
   ]);
 
@@ -83,6 +121,109 @@ export async function getDashboardData(vertical?: Vertical) {
   }
   const salesByStore = new Map(storeSalesAgg.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
   const incByStore = new Map(storeLedgerAgg.map((l) => [l.storeCode, asNumber(l._sum.finalIncentive)]));
+  const baseByStore = new Map(storeLedgerAgg.map((l) => [l.storeCode, asNumber(l._sum.baseIncentive)]));
+
+  // Achievement per store for distribution chart
+  const storeAchievements: { storeCode: string; achievementPct: number; incentive: number; sales: number }[] = [];
+  for (const store of storeRows) {
+    const target = targetByStore.get(store.storeCode) ?? 0;
+    const sales = salesByStore.get(store.storeCode) ?? 0;
+    const achievementPct = target > 0 ? Math.round((sales / target) * 100) : 0;
+    storeAchievements.push({ storeCode: store.storeCode, achievementPct, incentive: incByStore.get(store.storeCode) ?? 0, sales });
+  }
+
+  // Achievement distribution buckets
+  const buckets = [
+    { label: "0-70%", min: 0, max: 70 },
+    { label: "70-85%", min: 70, max: 85 },
+    { label: "85-95%", min: 85, max: 95 },
+    { label: "95-105%", min: 95, max: 105 },
+    { label: "105-120%", min: 105, max: 120 },
+    { label: "120%+", min: 120, max: 9999 },
+  ];
+  const achievementDistribution = buckets.map((b) => ({
+    bucket: b.label,
+    count: storeAchievements.filter((s) => s.achievementPct >= b.min && s.achievementPct < b.max).length,
+  }));
+
+  // Daily sales trend
+  const daysInMonth = differenceInDays(monthEnd, monthStart) + 1;
+  const dailyMap = new Map<string, { sales: number; txnCount: number }>();
+  for (let i = 0; i < daysInMonth; i++) {
+    const d = format(addDays(monthStart, i), "yyyy-MM-dd");
+    dailyMap.set(d, { sales: 0, txnCount: 0 });
+  }
+  for (const row of dailySalesRaw) {
+    const key = format(row.transactionDate, "yyyy-MM-dd");
+    dailyMap.set(key, { sales: asNumber(row._sum.grossAmount), txnCount: row._count });
+  }
+  const dailySalesTrend = [...dailyMap.entries()].map(([date, v]) => ({
+    date,
+    label: format(new Date(date), "dd MMM"),
+    sales: Math.round(v.sales),
+    transactions: v.txnCount,
+  }));
+
+  const totalFinal = asNumber(totalIncentiveAgg._sum.finalIncentive);
+  let potentialFromBelow = 0;
+  for (const store of storeRows) {
+    const base = baseByStore.get(store.storeCode) ?? 0;
+    const earned = incByStore.get(store.storeCode) ?? 0;
+    if (base > 0 && earned === 0) {
+      potentialFromBelow += base;
+    }
+  }
+  const potentialIncentive = totalFinal + potentialFromBelow;
+
+  // Vertical breakdown (always unfiltered for the overview cards)
+  const storesByVertical = new Map(verticalStores.map((v) => [v.vertical, v._count]));
+  const empCountByStore = new Map(verticalEmployees.map((v) => [v.storeCode, v._count]));
+  const storeVerticalMap = new Map(storeRows.map((s) => [s.storeCode, s.vertical]));
+  const empsByVertical = new Map<string, number>();
+  for (const [sc, count] of empCountByStore) {
+    const v = storeVerticalMap.get(sc);
+    if (v) empsByVertical.set(v, (empsByVertical.get(v) ?? 0) + count);
+  }
+  const salesByVertical = new Map(verticalSales.map((v) => [v.vertical, asNumber(v._sum.grossAmount)]));
+  const ledgerByVertical = new Map(verticalLedger.map((v) => [v.vertical, asNumber(v._sum.finalIncentive)]));
+
+  const targetsByVertical = new Map<string, number>();
+  const salesByVerticalOffline = new Map<string, number>();
+  for (const t of storeTargets) {
+    targetsByVertical.set(t.vertical, (targetsByVertical.get(t.vertical) ?? 0) + asNumber(t.targetValue));
+  }
+  for (const s of storeSalesAgg) {
+    const v = storeVerticalMap.get(s.storeCode);
+    if (v) salesByVerticalOffline.set(v, (salesByVerticalOffline.get(v) ?? 0) + asNumber(s._sum.grossAmount));
+  }
+
+  const verticalBreakdown = [Vertical.ELECTRONICS, Vertical.GROCERY, Vertical.FNL].map((v) => {
+    const tgt = targetsByVertical.get(v) ?? 0;
+    const act = salesByVerticalOffline.get(v) ?? 0;
+    return {
+      vertical: v,
+      stores: storesByVertical.get(v) ?? 0,
+      employees: empsByVertical.get(v) ?? 0,
+      salesMtd: Math.round(salesByVertical.get(v) ?? 0),
+      incentiveEarned: Math.round(ledgerByVertical.get(v) ?? 0),
+      avgAchievementPct: tgt > 0 ? Math.round((act / tgt) * 100) : 0,
+    };
+  });
+
+  // Below-threshold stores with names
+  const belowThresholdList: { storeCode: string; storeName: string; achievementPct: number }[] = [];
+  for (const store of storeRows) {
+    const sales = salesByStore.get(store.storeCode) ?? 0;
+    const incentives = incByStore.get(store.storeCode) ?? 0;
+    if (sales > 0 && incentives === 0) {
+      const target = targetByStore.get(store.storeCode) ?? 0;
+      belowThresholdList.push({
+        storeCode: store.storeCode,
+        storeName: store.storeName,
+        achievementPct: target > 0 ? Math.round((sales / target) * 100) : 0,
+      });
+    }
+  }
 
   const performerIds = topPerformers.map((item) => item.employeeId);
   const performerEmployees = performerIds.length
@@ -90,36 +231,28 @@ export async function getDashboardData(vertical?: Vertical) {
     : [];
   const employeeById = new Map(performerEmployees.map((e) => [e.employeeId, e]));
 
+  const avgAchievement = storeAchievements.length > 0
+    ? Math.round(storeAchievements.reduce((s, a) => s + a.achievementPct, 0) / storeAchievements.length)
+    : 0;
+
   return {
     stats: {
       totalEmployees: employeeCount,
-      totalIncentiveMtd: asNumber(totalIncentiveAgg._sum.finalIncentive),
+      totalSalesMtd: Math.round(asNumber(totalSalesAgg._sum.grossAmount)),
+      totalIncentiveMtd: Math.round(totalFinal),
+      potentialIncentive: Math.round(potentialIncentive),
+      avgAchievementPct: avgAchievement,
       activeSchemes,
       stores: storeRows.length,
     },
     alerts: {
       pendingApprovals,
-      belowThresholdStores: storeRows.filter((store) => {
-        const sales = salesByStore.get(store.storeCode) ?? 0;
-        const incentives = incByStore.get(store.storeCode) ?? 0;
-        return sales > 0 && incentives === 0;
-      }).length,
+      belowThresholdStores: belowThresholdList.length,
+      belowThresholdList: belowThresholdList.sort((a, b) => a.achievementPct - b.achievementPct).slice(0, 5),
     },
-    stores: storeRows.map((store) => {
-      const totalIncentiveStore = incByStore.get(store.storeCode) ?? 0;
-      const sales = salesByStore.get(store.storeCode) ?? 0;
-      const target = targetByStore.get(store.storeCode) ?? 0;
-      const achievementPct = target > 0 ? Math.round((sales / target) * 100) : 0;
-
-      return {
-        storeCode: store.storeCode,
-        storeName: store.storeName,
-        storeFormat: store.storeFormat,
-        employeeCount: store._count.employees,
-        totalIncentive: totalIncentiveStore,
-        achievementPct,
-      };
-    }),
+    verticalBreakdown,
+    achievementDistribution,
+    dailySalesTrend,
     topPerformers: topPerformers.map((item, index) => ({
       rank: index + 1,
       employeeId: item.employeeId,
