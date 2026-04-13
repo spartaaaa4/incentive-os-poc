@@ -73,6 +73,10 @@ const electronicsSlabs = [
 
 export async function POST() {
   try {
+    if (process.env.ENABLE_SEED !== "true") {
+      return NextResponse.json({ error: "Seed endpoint is disabled. Set ENABLE_SEED=true to enable." }, { status: 403 });
+    }
+
     const existingStores = await db.storeMaster.count();
     if (existingStores > 0) {
       return NextResponse.json({ message: "Database already has data. Skipping seed." }, { status: 200 });
@@ -232,6 +236,6 @@ export async function POST() {
     });
   } catch (error) {
     console.error("Seed error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: "Seed operation failed" }, { status: 500 });
   }
 }

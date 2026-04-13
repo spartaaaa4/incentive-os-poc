@@ -207,16 +207,44 @@ async function calculateGrocery(input: RecalculateInput) {
       (a, b) => asNumber(b.achievementFrom) - asNumber(a.achievementFrom),
     );
 
-    for (const storeTarget of campaign.storeTargets) {
-      if (!input.storeCodes.includes(storeTarget.storeCode)) continue;
-      const sales = await db.salesTransaction.findMany({
+    const relevantStoreCodes = campaign.storeTargets
+      .filter((st) => input.storeCodes.includes(st.storeCode))
+      .map((st) => st.storeCode);
+
+    const [allCampaignSales, allCampaignEmployees] = await Promise.all([
+      db.salesTransaction.findMany({
         where: {
-          storeCode: storeTarget.storeCode,
+          storeCode: { in: relevantStoreCodes },
           vertical: Vertical.GROCERY,
           channel: "OFFLINE",
           transactionDate: { gte: campaign.startDate, lte: campaign.endDate },
         },
-      });
+      }),
+      db.employeeMaster.findMany({
+        where: {
+          storeCode: { in: relevantStoreCodes },
+          payrollStatus: PayrollStatus.ACTIVE,
+          role: { in: [EmployeeRole.SM, EmployeeRole.DM, EmployeeRole.SA] },
+        },
+      }),
+    ]);
+
+    const salesByStore = new Map<string, typeof allCampaignSales>();
+    for (const s of allCampaignSales) {
+      const list = salesByStore.get(s.storeCode) ?? [];
+      list.push(s);
+      salesByStore.set(s.storeCode, list);
+    }
+    const empsByStore = new Map<string, typeof allCampaignEmployees>();
+    for (const e of allCampaignEmployees) {
+      const list = empsByStore.get(e.storeCode) ?? [];
+      list.push(e);
+      empsByStore.set(e.storeCode, list);
+    }
+
+    for (const storeTarget of campaign.storeTargets) {
+      if (!input.storeCodes.includes(storeTarget.storeCode)) continue;
+      const sales = salesByStore.get(storeTarget.storeCode) ?? [];
 
       const eligibleSales = sales.filter((sale) => articleSet.has(sale.articleCode));
       const totalSalesValue = eligibleSales.reduce((sum, sale) => sum + asNumber(sale.grossAmount), 0);
@@ -226,13 +254,7 @@ async function calculateGrocery(input: RecalculateInput) {
       const rate = achievementPct >= 100 ? asNumber(matched?.perPieceRate ?? 0) : 0;
       const totalIncentive = rate * totalPieces;
 
-      const employees = await db.employeeMaster.findMany({
-        where: {
-          storeCode: storeTarget.storeCode,
-          payrollStatus: PayrollStatus.ACTIVE,
-          role: { in: [EmployeeRole.SM, EmployeeRole.DM, EmployeeRole.SA] },
-        },
-      });
+      const employees = empsByStore.get(storeTarget.storeCode) ?? [];
       if (!employees.length) continue;
 
       const individualPayout = totalIncentive / employees.length;
@@ -308,13 +330,23 @@ async function calculateFnL(input: RecalculateInput) {
 
     const eligibleSAs: string[] = [];
     const saEmployees = employees.filter((employee) => employee.role === EmployeeRole.SA);
+    const saIds = saEmployees.map((e) => e.employeeId);
+    const allAttendance = saIds.length
+      ? await db.attendance.findMany({
+          where: {
+            employeeId: { in: saIds },
+            date: { gte: target.periodStart, lte: target.periodEnd },
+          },
+        })
+      : [];
+    const attendanceByEmp = new Map<string, typeof allAttendance>();
+    for (const a of allAttendance) {
+      const list = attendanceByEmp.get(a.employeeId) ?? [];
+      list.push(a);
+      attendanceByEmp.set(a.employeeId, list);
+    }
     for (const employee of saEmployees) {
-      const weekAttendance = await db.attendance.findMany({
-        where: {
-          employeeId: employee.employeeId,
-          date: { gte: target.periodStart, lte: target.periodEnd },
-        },
-      });
+      const weekAttendance = attendanceByEmp.get(employee.employeeId) ?? [];
       const presentDays = weekAttendance.filter((day) => day.status === AttendanceStatus.PRESENT).length;
       const disqualifyingDays = weekAttendance.filter((day) =>
         disqualifyingAttendanceStatuses.has(day.status),

@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { db } from "@/lib/db";
+
+const createPlanSchema = z.object({
+  vertical: z.enum(["ELECTRONICS", "GROCERY", "FNL"]),
+});
 
 const electronicsSlabs = [
   ["Photography", "All brands", 500, 42000, 40], ["Photography", "All brands", 42001, 52000, 75], ["Photography", "All brands", 52001, 999999, 120],
@@ -26,91 +31,104 @@ const defaultRoleSplits = [
 
 export async function POST(request: Request) {
   try {
-    const { vertical } = await request.json();
+    const body = createPlanSchema.safeParse(await request.json());
+    if (!body.success) {
+      return NextResponse.json({ error: body.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
+    }
+    const { vertical } = body.data;
 
     if (vertical === "ELECTRONICS") {
-      const plan = await db.incentivePlan.create({
-        data: {
-          planName: "Electronics Per Unit Plan",
-          vertical: "ELECTRONICS",
-          formulaType: "PER_UNIT",
-          periodType: "MONTHLY",
-          status: "DRAFT",
-          version: 1,
-          createdBy: "admin",
-        },
-      });
-      await db.productIncentiveSlab.createMany({
-        data: electronicsSlabs.map((s) => ({
-          planId: plan.id,
-          productFamily: s[0] as string,
-          brandFilter: s[1] as string,
-          priceFrom: s[2] as number,
-          priceTo: s[3] as number,
-          incentivePerUnit: s[4] as number,
-          effectiveFrom: new Date(),
-        })),
-      });
-      await db.achievementMultiplier.createMany({
-        data: defaultMultipliers.map((r) => ({
-          planId: plan.id,
-          achievementFrom: r[0],
-          achievementTo: r[1],
-          multiplierPct: r[2],
-          effectiveFrom: new Date(),
-        })),
+      const plan = await db.$transaction(async (tx) => {
+        const p = await tx.incentivePlan.create({
+          data: {
+            planName: "Electronics Per Unit Plan",
+            vertical: "ELECTRONICS",
+            formulaType: "PER_UNIT",
+            periodType: "MONTHLY",
+            status: "DRAFT",
+            version: 1,
+            createdBy: "admin",
+          },
+        });
+        await tx.productIncentiveSlab.createMany({
+          data: electronicsSlabs.map((s) => ({
+            planId: p.id,
+            productFamily: s[0] as string,
+            brandFilter: s[1] as string,
+            priceFrom: s[2] as number,
+            priceTo: s[3] as number,
+            incentivePerUnit: s[4] as number,
+            effectiveFrom: new Date(),
+          })),
+        });
+        await tx.achievementMultiplier.createMany({
+          data: defaultMultipliers.map((r) => ({
+            planId: p.id,
+            achievementFrom: r[0],
+            achievementTo: r[1],
+            multiplierPct: r[2],
+            effectiveFrom: new Date(),
+          })),
+        });
+        return p;
       });
       return NextResponse.json({ planId: plan.id });
     }
 
     if (vertical === "GROCERY") {
-      const plan = await db.incentivePlan.create({
-        data: {
-          planName: "Grocery Campaign Plan",
-          vertical: "GROCERY",
-          formulaType: "CAMPAIGN_SLAB",
-          periodType: "CAMPAIGN",
-          status: "DRAFT",
-          version: 1,
-          createdBy: "admin",
-        },
-      });
-      await db.campaignConfig.create({
-        data: {
-          planId: plan.id,
-          campaignName: "New Campaign",
-          startDate: new Date(),
-          endDate: new Date(Date.now() + 10 * 86400000),
-          channel: "OFFLINE",
-          distributionRule: "EQUAL",
-          status: "DRAFT",
-        },
+      const plan = await db.$transaction(async (tx) => {
+        const p = await tx.incentivePlan.create({
+          data: {
+            planName: "Grocery Campaign Plan",
+            vertical: "GROCERY",
+            formulaType: "CAMPAIGN_SLAB",
+            periodType: "CAMPAIGN",
+            status: "DRAFT",
+            version: 1,
+            createdBy: "admin",
+          },
+        });
+        await tx.campaignConfig.create({
+          data: {
+            planId: p.id,
+            campaignName: "New Campaign",
+            startDate: new Date(),
+            endDate: new Date(Date.now() + 10 * 86400000),
+            channel: "OFFLINE",
+            distributionRule: "EQUAL",
+            status: "DRAFT",
+          },
+        });
+        return p;
       });
       return NextResponse.json({ planId: plan.id });
     }
 
     if (vertical === "FNL") {
-      const plan = await db.incentivePlan.create({
-        data: {
-          planName: "F&L Weekly Store Pool",
-          vertical: "FNL",
-          formulaType: "WEEKLY_POOL",
-          periodType: "WEEKLY",
-          status: "DRAFT",
-          version: 1,
-          config: { poolPct: 1, attendanceMinDays: 5, weekDefinition: "SUNDAY_TO_SATURDAY" },
-          createdBy: "admin",
-        },
-      });
-      await db.fnlRoleSplit.createMany({
-        data: defaultRoleSplits.map((r) => ({
-          planId: plan.id,
-          numSms: r[0],
-          numDms: r[1],
-          saPoolPct: r[2],
-          smSharePct: r[3],
-          dmSharePerDmPct: r[4],
-        })),
+      const plan = await db.$transaction(async (tx) => {
+        const p = await tx.incentivePlan.create({
+          data: {
+            planName: "F&L Weekly Store Pool",
+            vertical: "FNL",
+            formulaType: "WEEKLY_POOL",
+            periodType: "WEEKLY",
+            status: "DRAFT",
+            version: 1,
+            config: { poolPct: 1, attendanceMinDays: 5, weekDefinition: "SUNDAY_TO_SATURDAY" },
+            createdBy: "admin",
+          },
+        });
+        await tx.fnlRoleSplit.createMany({
+          data: defaultRoleSplits.map((r) => ({
+            planId: p.id,
+            numSms: r[0],
+            numDms: r[1],
+            saPoolPct: r[2],
+            smSharePct: r[3],
+            dmSharePerDmPct: r[4],
+          })),
+        });
+        return p;
       });
       return NextResponse.json({ planId: plan.id });
     }
@@ -118,6 +136,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid vertical" }, { status: 400 });
   } catch (error) {
     console.error("Create plan error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: "Failed to create plan" }, { status: 500 });
   }
 }

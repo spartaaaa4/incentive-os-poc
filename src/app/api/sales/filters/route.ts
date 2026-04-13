@@ -18,6 +18,6 @@ export async function GET() {
     return NextResponse.json({ stores, employees });
   } catch (error) {
     console.error("Sales filters API error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: "Failed to fetch filters" }, { status: 500 });
   }
 }

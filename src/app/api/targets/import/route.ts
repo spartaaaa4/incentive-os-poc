@@ -84,6 +84,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ imported: validated.length, errors: [] });
   } catch (error) {
     console.error("Target import error:", error);
-    return NextResponse.json({ imported: 0, errors: [String(error)] }, { status: 500 });
+    return NextResponse.json({ imported: 0, errors: ["Target import failed"] }, { status: 500 });
   }
 }

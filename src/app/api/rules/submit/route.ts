@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { db } from "@/lib/db";
+
+const submitSchema = z.object({
+  planId: z.number().int().positive(),
+});
 
 export async function POST(request: Request) {
   try {
-    const { planId } = await request.json();
+    const parsed = submitSchema.safeParse(await request.json());
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
+    }
+    const { planId } = parsed.data;
     const plan = await db.incentivePlan.findUnique({ where: { id: planId } });
     if (!plan) return NextResponse.json({ error: "Plan not found" }, { status: 404 });
     if (plan.status !== "DRAFT") {
@@ -28,6 +37,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Submit rule error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: "Failed to submit plan" }, { status: 500 });
   }
 }
