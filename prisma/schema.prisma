@@ -177,6 +177,7 @@ model SalesTransaction {
   @@index([storeCode, transactionDate])
   @@index([vertical, transactionDate])
   @@index([transactionType, channel])
+  @@index([employeeId, transactionDate])
   @@map("sales_transaction")
 }
 
@@ -351,6 +352,7 @@ model IncentiveLedger {
 
   @@index([storeCode, vertical, periodStart, periodEnd])
   @@index([employeeId, periodStart, periodEnd])
+  @@index([planId, campaignId])
   @@map("incentive_ledger")
 }
 

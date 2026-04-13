@@ -1,9 +1,37 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { db } from "@/lib/db";
+
+const groceryUpdateSchema = z.object({
+  planId: z.number().int().positive(),
+  campaignId: z.number().int().positive().optional(),
+  campaignName: z.string().min(1).optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  channel: z.enum(["OFFLINE", "ONLINE"]).optional(),
+  articles: z.array(z.object({
+    articleCode: z.string().min(1),
+    brand: z.string().min(1),
+    description: z.string().min(1),
+  })).optional(),
+  storeTargets: z.array(z.object({
+    storeCode: z.string().min(1),
+    targetValue: z.coerce.number().positive(),
+  })).optional(),
+  payoutSlabs: z.array(z.object({
+    achievementFrom: z.coerce.number().nonnegative(),
+    achievementTo: z.coerce.number().positive(),
+    perPieceRate: z.coerce.number().nonnegative(),
+  })).optional(),
+});
 
 export async function PUT(request: Request) {
   try {
-    const { planId, campaignId, campaignName, startDate, endDate, channel, articles, storeTargets, payoutSlabs } = await request.json();
+    const parsed = groceryUpdateSchema.safeParse(await request.json());
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
+    }
+    const { planId, campaignId, campaignName, startDate, endDate, channel, articles, storeTargets, payoutSlabs } = parsed.data;
 
     await db.$transaction(async (tx) => {
       await tx.incentivePlan.update({
@@ -69,6 +97,6 @@ export async function PUT(request: Request) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Grocery rule update error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: "Failed to update grocery rules" }, { status: 500 });
   }
 }

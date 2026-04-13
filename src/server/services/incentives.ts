@@ -1,4 +1,4 @@
-import { AttendanceStatus, Vertical } from "@prisma/client";
+import { Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
 
 function asNumber(value: unknown): number {
@@ -54,15 +54,17 @@ async function getCitySummary(params: Params) {
   });
 
   const cityMap = new Map<string, { state: string; stores: Set<string>; employees: Set<string>; incentive: number; achSum: number; achCount: number }>();
+  const storeToCityMap = new Map<string, string>();
   for (const s of stores) {
     if (!cityMap.has(s.city)) cityMap.set(s.city, { state: s.state, stores: new Set(), employees: new Set(), incentive: 0, achSum: 0, achCount: 0 });
     cityMap.get(s.city)!.stores.add(s.storeCode);
+    storeToCityMap.set(s.storeCode, s.city);
   }
 
   for (const row of ledger) {
-    const store = stores.find((s) => s.storeCode === row.storeCode);
-    if (!store) continue;
-    const bucket = cityMap.get(store.city)!;
+    const city = storeToCityMap.get(row.storeCode);
+    if (!city) continue;
+    const bucket = cityMap.get(city)!;
     bucket.employees.add(row.employeeId);
     bucket.incentive += asNumber(row.finalIncentive);
     if (row.achievementPct != null) { bucket.achSum += asNumber(row.achievementPct); bucket.achCount++; }
@@ -394,10 +396,9 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
   const attendance = await db.attendance.findMany({
     where: { employeeId: employee.employeeId, date: { gte: latestRow.periodStart, lte: latestRow.periodEnd } },
   });
-  const presentDays = attendance.filter((a: { status: AttendanceStatus }) => a.status === AttendanceStatus.PRESENT).length;
-  const disqualifying = attendance.filter((a: { status: AttendanceStatus }) =>
-    [AttendanceStatus.ABSENT, AttendanceStatus.LEAVE_APPROVED, AttendanceStatus.LEAVE_UNAPPROVED].includes(a.status)
-  ).length;
+  const presentDays = attendance.filter((a) => a.status === "PRESENT").length;
+  const disqualifyingStatuses = new Set<string>(["ABSENT", "LEAVE_APPROVED", "LEAVE_UNAPPROVED"]);
+  const disqualifying = attendance.filter((a) => disqualifyingStatuses.has(a.status)).length;
   const attendanceEligible = presentDays >= 5 && disqualifying === 0;
 
   const eligibleSAs = storeEmployees.filter((e: { role: string }) => e.role === "SA").length;

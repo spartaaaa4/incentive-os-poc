@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, Loader2, ArrowLeft, TrendingUp, Users, MapPin, Store, Briefcase, User } from "lucide-react";
 import { formatInr, formatNumber } from "@/lib/format";
-import { Vertical } from "@prisma/client";
+import { Vertical } from "@/lib/constants";
 
 type Breadcrumb = { label: string; params: Record<string, string> };
 

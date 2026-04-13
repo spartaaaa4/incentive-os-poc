@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Vertical } from "@prisma/client";
+import { Vertical } from "@/lib/constants";
 import { formatInr, formatNumber } from "@/lib/format";
 import { IncentiveDrilldown } from "@/components/dashboard/incentive-drilldown";
 

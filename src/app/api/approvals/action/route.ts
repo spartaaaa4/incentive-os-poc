@@ -1,71 +1,85 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { db } from "@/lib/db";
+
+const approvalSchema = z.object({
+  entityType: z.enum(["PLAN", "TARGET"]),
+  entityId: z.number().int().positive(),
+  action: z.enum(["APPROVED", "REJECTED"]),
+  reason: z.string().optional(),
+});
 
 export async function POST(request: Request) {
   try {
-    const { entityType, entityId, action, reason } = await request.json();
-
-    if (!["APPROVED", "REJECTED"].includes(action)) {
-      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    const parsed = approvalSchema.safeParse(await request.json());
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
     }
+    const { entityType, entityId, action, reason } = parsed.data;
 
     const newStatus = action === "APPROVED" ? "ACTIVE" : "DRAFT";
 
-    if (entityType === "PLAN") {
-      const plan = await db.incentivePlan.findUnique({ where: { id: entityId } });
-      if (!plan || plan.status !== "SUBMITTED") {
-        return NextResponse.json({ error: "Plan not in SUBMITTED status" }, { status: 400 });
+    await db.$transaction(async (tx) => {
+      if (entityType === "PLAN") {
+        const plan = await tx.incentivePlan.findUnique({ where: { id: entityId } });
+        if (!plan || plan.status !== "SUBMITTED") {
+          throw new Error("Plan not in SUBMITTED status");
+        }
+
+        await tx.incentivePlan.update({
+          where: { id: entityId },
+          data: {
+            status: newStatus,
+            approvedBy: action === "APPROVED" ? "checker" : undefined,
+            rejectionReason: action === "REJECTED" ? reason : undefined,
+          },
+        });
+
+        if (action === "APPROVED") {
+          await tx.campaignConfig.updateMany({
+            where: { planId: entityId, status: "SUBMITTED" },
+            data: { status: "ACTIVE" },
+          });
+        }
       }
 
-      await db.incentivePlan.update({
-        where: { id: entityId },
-        data: {
-          status: newStatus,
-          approvedBy: action === "APPROVED" ? "checker" : undefined,
-          rejectionReason: action === "REJECTED" ? reason : undefined,
-        },
-      });
+      if (entityType === "TARGET") {
+        const refTarget = await tx.target.findUnique({ where: { id: entityId } });
+        if (!refTarget || refTarget.status !== "SUBMITTED") {
+          throw new Error("Target group not in SUBMITTED status");
+        }
 
-      if (action === "APPROVED") {
-        await db.campaignConfig.updateMany({
-          where: { planId: entityId, status: "SUBMITTED" },
-          data: { status: "ACTIVE" },
+        await tx.target.updateMany({
+          where: {
+            status: "SUBMITTED",
+            vertical: refTarget.vertical,
+            periodType: refTarget.periodType,
+          },
+          data: {
+            status: newStatus,
+            approvedBy: action === "APPROVED" ? "checker" : undefined,
+          },
         });
       }
-    }
 
-    if (entityType === "TARGET") {
-      const refTarget = await db.target.findUnique({ where: { id: entityId } });
-      if (!refTarget || refTarget.status !== "SUBMITTED") {
-        return NextResponse.json({ error: "Target group not in SUBMITTED status" }, { status: 400 });
-      }
-
-      await db.target.updateMany({
-        where: {
-          status: "SUBMITTED",
-          vertical: refTarget.vertical,
-          periodType: refTarget.periodType,
-        },
+      await tx.auditLog.create({
         data: {
-          status: newStatus,
-          approvedBy: action === "APPROVED" ? "checker" : undefined,
+          entityType: entityType as "PLAN" | "TARGET" | "CAMPAIGN" | "CALCULATION",
+          entityId: typeof entityId === "number" ? entityId : 0,
+          action: action as "APPROVED" | "REJECTED",
+          newValue: { reason: reason ?? null },
+          performedBy: "checker",
         },
       });
-    }
-
-    await db.auditLog.create({
-      data: {
-        entityType: entityType as "PLAN" | "TARGET" | "CAMPAIGN" | "CALCULATION",
-        entityId: typeof entityId === "number" ? entityId : 0,
-        action: action as "APPROVED" | "REJECTED",
-        newValue: { reason: reason ?? null },
-        performedBy: "checker",
-      },
     });
 
     return NextResponse.json({ ok: true });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Approval action failed";
+    if (message.includes("not in SUBMITTED status")) {
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
     console.error("Approval action error:", error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: "Approval action failed" }, { status: 500 });
   }
 }

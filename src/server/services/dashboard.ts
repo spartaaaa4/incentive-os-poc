@@ -12,89 +12,102 @@ function asNumber(value: unknown): number {
 
 export async function getDashboardData(vertical?: Vertical) {
   const monthStart = startOfMonth(new Date("2026-04-13"));
-  const storeWhere = vertical ? { vertical } : {};
-  const ledgerWhere = vertical
-    ? { vertical, periodStart: { gte: monthStart } }
-    : { periodStart: { gte: monthStart } };
+  const verticalWhere = vertical ? { vertical } : {};
 
-  const [stores, employees, activeSchemes, totalIncentive, topPerformers, pendingApprovalTargets, pendingApprovalPlans, storeTargets] =
-    await Promise.all([
-      db.storeMaster.findMany({
-        where: storeWhere,
-        include: {
-          employees: true,
-          incentiveLedger: { where: { periodStart: { gte: monthStart } } },
-          salesTransactions: {
-            where: { transactionDate: { gte: monthStart }, transactionType: "NORMAL", channel: "OFFLINE" },
-          },
-        },
-      }),
-      db.employeeMaster.count({
-        where: {
-          payrollStatus: "ACTIVE",
-          ...(vertical ? { store: { vertical } } : {}),
-        },
-      }),
-      db.incentivePlan.count({
-        where: { status: "ACTIVE", ...(vertical ? { vertical } : {}) },
-      }),
-      db.incentiveLedger.aggregate({
-        where: ledgerWhere,
-        _sum: { finalIncentive: true },
-      }),
-      db.incentiveLedger.groupBy({
-        by: ["employeeId", "storeCode"],
-        where: ledgerWhere,
-        _sum: { finalIncentive: true },
-        orderBy: { _sum: { finalIncentive: "desc" } },
-        take: 10,
-      }),
-      db.target.count({ where: { status: "SUBMITTED" } }),
-      db.incentivePlan.count({ where: { status: "SUBMITTED" } }),
-      db.target.findMany({
-        where: {
-          periodStart: { lte: new Date() },
-          periodEnd: { gte: monthStart },
-          status: "ACTIVE",
-          ...(vertical ? { vertical } : {}),
-        },
-        select: { storeCode: true, targetValue: true },
-      }),
-    ]);
+  const [
+    storeRows,
+    employeeCount,
+    activeSchemes,
+    totalIncentiveAgg,
+    topPerformers,
+    pendingApprovalTargets,
+    pendingApprovalPlans,
+    storeTargets,
+    storeSalesAgg,
+    storeLedgerAgg,
+  ] = await Promise.all([
+    db.storeMaster.findMany({
+      where: verticalWhere,
+      select: { storeCode: true, storeName: true, storeFormat: true, _count: { select: { employees: true } } },
+    }),
+    db.employeeMaster.count({
+      where: { payrollStatus: "ACTIVE", ...(vertical ? { store: { vertical } } : {}) },
+    }),
+    db.incentivePlan.count({
+      where: { status: "ACTIVE", ...verticalWhere },
+    }),
+    db.incentiveLedger.aggregate({
+      where: { periodStart: { gte: monthStart }, ...verticalWhere },
+      _sum: { finalIncentive: true },
+    }),
+    db.incentiveLedger.groupBy({
+      by: ["employeeId", "storeCode"] as const,
+      where: { periodStart: { gte: monthStart }, ...verticalWhere },
+      _sum: { finalIncentive: true },
+      orderBy: { _sum: { finalIncentive: "desc" } },
+      take: 10,
+    }),
+    db.target.count({ where: { status: "SUBMITTED" } }),
+    db.incentivePlan.count({ where: { status: "SUBMITTED" } }),
+    db.target.findMany({
+      where: {
+        periodStart: { lte: new Date() },
+        periodEnd: { gte: monthStart },
+        status: "ACTIVE",
+        ...verticalWhere,
+      },
+      select: { storeCode: true, targetValue: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["storeCode"] as const,
+      where: {
+        transactionDate: { gte: monthStart },
+        transactionType: "NORMAL",
+        channel: "OFFLINE",
+        ...verticalWhere,
+      },
+      _sum: { grossAmount: true },
+    }),
+    db.incentiveLedger.groupBy({
+      by: ["storeCode"] as const,
+      where: { periodStart: { gte: monthStart }, ...verticalWhere },
+      _sum: { finalIncentive: true },
+    }),
+  ]);
 
   const pendingApprovals = pendingApprovalTargets + pendingApprovalPlans;
+
   const targetByStore = new Map<string, number>();
   for (const t of storeTargets) {
     targetByStore.set(t.storeCode, (targetByStore.get(t.storeCode) ?? 0) + asNumber(t.targetValue));
   }
+  const salesByStore = new Map(storeSalesAgg.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
+  const incByStore = new Map(storeLedgerAgg.map((l) => [l.storeCode, asNumber(l._sum.finalIncentive)]));
 
   const performerIds = topPerformers.map((item) => item.employeeId);
   const performerEmployees = performerIds.length
     ? await db.employeeMaster.findMany({ where: { employeeId: { in: performerIds } } })
     : [];
-  const employeeById = new Map(performerEmployees.map((employee) => [employee.employeeId, employee]));
+  const employeeById = new Map(performerEmployees.map((e) => [e.employeeId, e]));
 
   return {
     stats: {
-      totalEmployees: employees,
-      totalIncentiveMtd: asNumber(totalIncentive._sum.finalIncentive),
+      totalEmployees: employeeCount,
+      totalIncentiveMtd: asNumber(totalIncentiveAgg._sum.finalIncentive),
       activeSchemes,
-      stores: stores.length,
+      stores: storeRows.length,
     },
     alerts: {
       pendingApprovals,
-      belowThresholdStores: stores.filter((store) => {
-        const sales = store.salesTransactions.reduce((sum, item) => sum + asNumber(item.grossAmount), 0);
-        const incentives = store.incentiveLedger.reduce((sum, item) => sum + asNumber(item.finalIncentive), 0);
+      belowThresholdStores: storeRows.filter((store) => {
+        const sales = salesByStore.get(store.storeCode) ?? 0;
+        const incentives = incByStore.get(store.storeCode) ?? 0;
         return sales > 0 && incentives === 0;
       }).length,
     },
-    stores: stores.map((store) => {
-      const totalIncentiveStore = store.incentiveLedger.reduce(
-        (sum, item) => sum + asNumber(item.finalIncentive),
-        0,
-      );
-      const sales = store.salesTransactions.reduce((sum, item) => sum + asNumber(item.grossAmount), 0);
+    stores: storeRows.map((store) => {
+      const totalIncentiveStore = incByStore.get(store.storeCode) ?? 0;
+      const sales = salesByStore.get(store.storeCode) ?? 0;
       const target = targetByStore.get(store.storeCode) ?? 0;
       const achievementPct = target > 0 ? Math.round((sales / target) * 100) : 0;
 
@@ -102,7 +115,7 @@ export async function getDashboardData(vertical?: Vertical) {
         storeCode: store.storeCode,
         storeName: store.storeName,
         storeFormat: store.storeFormat,
-        employeeCount: store.employees.length,
+        employeeCount: store._count.employees,
         totalIncentive: totalIncentiveStore,
         achievementPct,
       };

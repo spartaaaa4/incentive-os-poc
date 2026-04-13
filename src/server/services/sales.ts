@@ -73,14 +73,17 @@ type SlabRow = {
 };
 
 let cachedSlabs: SlabRow[] | null = null;
+let slabCacheExpiry = 0;
+const SLAB_CACHE_TTL_MS = 60_000;
 
 async function getElectronicsSlabs(): Promise<SlabRow[]> {
-  if (cachedSlabs) return cachedSlabs;
+  if (cachedSlabs && Date.now() < slabCacheExpiry) return cachedSlabs;
   const plan = await db.incentivePlan.findFirst({
     where: { vertical: Vertical.ELECTRONICS, status: "ACTIVE" },
     include: { productIncentiveSlabs: true },
   });
   cachedSlabs = plan?.productIncentiveSlabs ?? [];
+  slabCacheExpiry = Date.now() + SLAB_CACHE_TTL_MS;
   return cachedSlabs;
 }
 
