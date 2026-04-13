@@ -9,7 +9,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
 
-    const newStatus = action === "APPROVED" ? "ACTIVE" : "REJECTED";
+    const newStatus = action === "APPROVED" ? "ACTIVE" : "DRAFT";
 
     if (entityType === "PLAN") {
       const plan = await db.incentivePlan.findUnique({ where: { id: entityId } });

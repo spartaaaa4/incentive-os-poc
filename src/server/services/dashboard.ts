@@ -17,7 +17,7 @@ export async function getDashboardData(vertical?: Vertical) {
     ? { vertical, periodStart: { gte: monthStart } }
     : { periodStart: { gte: monthStart } };
 
-  const [stores, employees, activeSchemes, totalIncentive, topPerformers, pendingApprovals] =
+  const [stores, employees, activeSchemes, totalIncentive, topPerformers, pendingApprovalTargets, pendingApprovalPlans, storeTargets] =
     await Promise.all([
       db.storeMaster.findMany({
         where: storeWhere,
@@ -50,7 +50,23 @@ export async function getDashboardData(vertical?: Vertical) {
         take: 10,
       }),
       db.target.count({ where: { status: "SUBMITTED" } }),
+      db.incentivePlan.count({ where: { status: "SUBMITTED" } }),
+      db.target.findMany({
+        where: {
+          periodStart: { lte: new Date() },
+          periodEnd: { gte: monthStart },
+          status: "ACTIVE",
+          ...(vertical ? { vertical } : {}),
+        },
+        select: { storeCode: true, targetValue: true },
+      }),
     ]);
+
+  const pendingApprovals = pendingApprovalTargets + pendingApprovalPlans;
+  const targetByStore = new Map<string, number>();
+  for (const t of storeTargets) {
+    targetByStore.set(t.storeCode, (targetByStore.get(t.storeCode) ?? 0) + asNumber(t.targetValue));
+  }
 
   const performerIds = topPerformers.map((item) => item.employeeId);
   const performerEmployees = performerIds.length
@@ -79,7 +95,8 @@ export async function getDashboardData(vertical?: Vertical) {
         0,
       );
       const sales = store.salesTransactions.reduce((sum, item) => sum + asNumber(item.grossAmount), 0);
-      const achievementPct = sales > 0 ? Math.min(180, (totalIncentiveStore / sales) * 1000) : 0;
+      const target = targetByStore.get(store.storeCode) ?? 0;
+      const achievementPct = target > 0 ? Math.round((sales / target) * 100) : 0;
 
       return {
         storeCode: store.storeCode,

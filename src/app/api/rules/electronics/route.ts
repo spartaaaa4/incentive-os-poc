@@ -6,6 +6,11 @@ export async function PUT(request: Request) {
     const { planId, slabs, multipliers } = await request.json();
 
     await db.$transaction(async (tx) => {
+      await tx.incentivePlan.update({
+        where: { id: planId },
+        data: { status: "DRAFT" },
+      });
+
       if (slabs) {
         await tx.productIncentiveSlab.deleteMany({ where: { planId } });
         await tx.productIncentiveSlab.createMany({

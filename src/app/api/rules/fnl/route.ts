@@ -6,12 +6,10 @@ export async function PUT(request: Request) {
     const { planId, roleSplits, config } = await request.json();
 
     await db.$transaction(async (tx) => {
-      if (config) {
-        await tx.incentivePlan.update({
-          where: { id: planId },
-          data: { config },
-        });
-      }
+      await tx.incentivePlan.update({
+        where: { id: planId },
+        data: { status: "DRAFT", ...(config ? { config } : {}) },
+      });
 
       if (roleSplits) {
         await tx.fnlRoleSplit.deleteMany({ where: { planId } });
