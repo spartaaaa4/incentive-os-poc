@@ -104,10 +104,10 @@ async function getStoreSummary(params: Params) {
     select: { storeCode: true, targetValue: true },
   });
 
-  const sales = await db.salesTransaction.aggregate({
+  const sales = await db.salesTransaction.groupBy({
+    by: ["storeCode"] as const,
     _sum: { grossAmount: true },
     where: { storeCode: { in: storeCodes }, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE", ...verticalFilter },
-    by: ["storeCode"],
   });
   const salesByStore = new Map(sales.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
   const targetByStore = new Map<string, number>();
