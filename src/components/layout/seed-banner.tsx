@@ -3,16 +3,32 @@
 import { useEffect, useState } from "react";
 import { Database, Loader2 } from "lucide-react";
 
+async function checkStoresEmpty(): Promise<boolean> {
+  try {
+    const r = await fetch("/api/sales/filters");
+    if (!r.ok) return false;
+    const d = await r.json();
+    return Array.isArray(d.stores) && d.stores.length === 0;
+  } catch {
+    return false;
+  }
+}
+
 export function SeedBanner() {
   const [empty, setEmpty] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    fetch("/api/sales/filters")
-      .then((r) => (r.ok ? r.json() : { stores: [] }))
-      .then((d) => { if (!d.stores?.length) setEmpty(true); })
-      .catch(() => setEmpty(true));
+    checkStoresEmpty().then((isEmpty) => {
+      if (isEmpty) {
+        setTimeout(() => {
+          checkStoresEmpty().then((stillEmpty) => {
+            if (stillEmpty) setEmpty(true);
+          });
+        }, 1500);
+      }
+    });
   }, []);
 
   if (!empty || done) return null;
@@ -24,7 +40,7 @@ export function SeedBanner() {
       if (res.ok) {
         setDone(true);
         setEmpty(false);
-        window.location.reload();
+        setTimeout(() => window.location.reload(), 500);
       }
     } catch {
       /* ignore */
