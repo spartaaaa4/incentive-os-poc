@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     console.error("Sales API error:", error);
     return NextResponse.json(
       { rows: [], error: error instanceof Error ? error.message : "Database connection failed" },
-      { status: 200 },
+      { status: 500 },
     );
   }
 }

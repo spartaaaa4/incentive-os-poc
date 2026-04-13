@@ -9,6 +9,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
 
+    if (!entityId || !entityType) {
+      return NextResponse.json({ error: "entityType and entityId are required" }, { status: 400 });
+    }
+
     const newStatus = action === "APPROVED" ? "ACTIVE" : "REJECTED";
 
     if (entityType === "PLAN") {
@@ -32,16 +36,27 @@ export async function POST(request: Request) {
           data: { status: "ACTIVE" },
         });
       }
-    }
+    } else if (entityType === "TARGET") {
+      const anchor = await db.target.findUnique({ where: { id: entityId } });
+      if (!anchor || anchor.status !== "SUBMITTED") {
+        return NextResponse.json({ error: "Target not in SUBMITTED status" }, { status: 400 });
+      }
 
-    if (entityType === "TARGET") {
       await db.target.updateMany({
-        where: { status: "SUBMITTED" },
+        where: {
+          status: "SUBMITTED",
+          vertical: anchor.vertical,
+          periodType: anchor.periodType,
+          periodStart: anchor.periodStart,
+          periodEnd: anchor.periodEnd,
+        },
         data: {
           status: newStatus,
           approvedBy: action === "APPROVED" ? "checker" : undefined,
         },
       });
+    } else {
+      return NextResponse.json({ error: "Unsupported entityType" }, { status: 400 });
     }
 
     await db.auditLog.create({
