@@ -1,4 +1,5 @@
 import { Sidebar } from "@/components/layout/sidebar";
+import { SeedBanner } from "@/components/layout/seed-banner";
 
 type AppShellProps = {
   title: string;
@@ -13,6 +14,7 @@ export function AppShell({ title, children }: AppShellProps) {
         <header className="px-8 py-5 bg-white border-b border-slate-200">
           <h2 className="text-xl font-semibold text-slate-900">{title}</h2>
         </header>
+        <SeedBanner />
         <section className="p-8">{children}</section>
       </main>
     </div>
