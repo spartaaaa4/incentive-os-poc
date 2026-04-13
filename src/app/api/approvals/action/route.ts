@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { startOfMonth, endOfMonth } from "date-fns";
 import { db } from "@/lib/db";
+import { recalculateIncentives } from "@/server/calculations/engines";
 
 const approvalSchema = z.object({
   entityType: z.enum(["PLAN", "TARGET"]),
@@ -72,6 +74,22 @@ export async function POST(request: Request) {
         },
       });
     });
+
+    // Retroactive recalculation: when a plan or target is approved, recalculate affected incentives
+    if (action === "APPROVED") {
+      try {
+        const allStores = await db.storeMaster.findMany({ select: { storeCode: true } });
+        const storeCodes = allStores.map((s) => s.storeCode);
+        const now = new Date();
+        await recalculateIncentives({
+          storeCodes,
+          periodStart: startOfMonth(now),
+          periodEnd: endOfMonth(now),
+        });
+      } catch (recalcError) {
+        console.error("Post-approval recalculation error:", recalcError);
+      }
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {

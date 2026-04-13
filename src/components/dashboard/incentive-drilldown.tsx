@@ -91,8 +91,7 @@ export function IncentiveDrilldown() {
 
       {!loading && data && level === "city" && <CityView data={data} onDrill={drillTo} />}
       {!loading && data && level === "store" && <StoreView data={data} onDrill={drillTo} />}
-      {!loading && data && level === "department" && <DeptView data={data} onDrill={drillTo} />}
-      {!loading && data && level === "employees" && <EmployeeListView data={data} onDrill={drillTo} />}
+      {!loading && data && level === "storeDetail" && <StoreDetailView data={data} onDrill={drillTo} />}
       {!loading && data && level === "employeeDetail" && <EmployeeDetailView data={data} />}
     </div>
   );
@@ -195,64 +194,60 @@ function StoreView({ data, onDrill }: { data: Record<string, unknown>; onDrill: 
   );
 }
 
-// ── Level 3: Departments ──
-function DeptView({ data, onDrill }: { data: Record<string, unknown>; onDrill: (label: string, p: Record<string, string>) => void }) {
-  const summary = data.summary as { storeCode: string; storeName: string; vertical: string; totalIncentive: number };
-  const rows = data.rows as Array<{ department: string; vertical: string; target: number; actual: number; achievementPct: number; multiplierPct: number; totalIncentive: number; employeeCount: number }>;
+// ── Level 3: Store Detail (departments + employees) ──
+function StoreDetailView({ data, onDrill }: { data: Record<string, unknown>; onDrill: (label: string, p: Record<string, string>) => void }) {
+  const summary = data.summary as { storeCode: string; storeName: string; vertical: string; totalIncentive: number; employeeCount: number };
+  const departments = data.departments as Array<{ department: string; vertical: string; target: number; actual: number; achievementPct: number }>;
+  const employees = data.employees as Array<{ employeeId: string; employeeName: string; role: string; baseIncentive: number; multiplierPct: number; achievementPct: number; finalIncentive: number }>;
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
         <Stat icon={<Store size={16} />} label="Store" value={summary.storeName ?? summary.storeCode} />
         <Stat icon={<Briefcase size={16} />} label="Vertical" value={summary.vertical} />
         <Stat icon={<TrendingUp size={16} />} label="Total Incentive" value={formatInr(summary.totalIncentive)} />
+        <Stat icon={<Users size={16} />} label="Employees Earning" value={formatNumber(summary.employeeCount)} />
       </div>
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr>
-            <th className="p-3 text-left">Department</th><th className="p-3 text-right">Target</th><th className="p-3 text-right">Actual</th>
-            <th className="p-3 text-center">Achievement</th><th className="p-3 text-right">Multiplier</th><th className="p-3 text-right">Incentive</th><th className="p-3 text-center">Employees</th><th className="p-3 w-6"></th>
-          </tr></thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.department} onClick={() => onDrill(r.department, { storeCode: summary.storeCode, department: r.department })}
-                className="border-t border-slate-100 hover:bg-blue-50/50 cursor-pointer transition-colors">
-                <td className="p-3 font-medium text-slate-900">{r.department}</td>
-                <td className="p-3 text-right">{formatInr(r.target)}</td>
-                <td className="p-3 text-right">{formatInr(r.actual)}</td>
-                <td className="p-3"><div className="flex items-center gap-2"><AchievementBar pct={r.achievementPct} /><span className="text-xs font-medium w-12 text-right">{r.achievementPct}%</span></div></td>
-                <td className="p-3 text-right">{r.multiplierPct > 0 ? `${r.multiplierPct}%` : "—"}</td>
-                <td className="p-3 text-right font-medium">{formatInr(r.totalIncentive)}</td>
-                <td className="p-3 text-center">{r.employeeCount}</td>
-                <td className="p-3"><ChevronRight size={14} className="text-slate-300" /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
 
-// ── Level 4: Employee list ──
-function EmployeeListView({ data, onDrill }: { data: Record<string, unknown>; onDrill: (label: string, p: Record<string, string>) => void }) {
-  const summary = data.summary as { department: string; target: number; actual: number; achievementPct: number; multiplierPct: number };
-  const rows = data.rows as Array<{ employeeId: string; employeeName: string; role: string; baseIncentive: number; multiplierPct: number; achievementPct: number; finalIncentive: number }>;
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat icon={<Briefcase size={16} />} label="Department" value={summary.department} />
-        <Stat icon={<TrendingUp size={16} />} label="Achievement" value={`${summary.achievementPct}%`} />
-        <Stat icon={<TrendingUp size={16} />} label="Target" value={formatInr(summary.target)} />
-        <Stat icon={<TrendingUp size={16} />} label="Actual" value={formatInr(summary.actual)} />
-      </div>
+      {/* Department targets & achievement */}
+      {departments.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+            <h3 className="text-sm font-medium text-slate-700">Department Targets & Achievement</h3>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-600"><tr>
+              <th className="p-3 text-left">Department</th><th className="p-3 text-right">Target</th><th className="p-3 text-right">Actual</th>
+              <th className="p-3 text-center">Achievement</th>
+            </tr></thead>
+            <tbody>
+              {departments.map((r) => (
+                <tr key={r.department} className="border-t border-slate-100">
+                  <td className="p-3 font-medium text-slate-900">{r.department}</td>
+                  <td className="p-3 text-right">{formatInr(r.target)}</td>
+                  <td className="p-3 text-right">{formatInr(r.actual)}</td>
+                  <td className="p-3"><div className="flex items-center gap-2"><AchievementBar pct={r.achievementPct} /><span className="text-xs font-medium w-12 text-right">{r.achievementPct}%</span></div></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Employee incentives */}
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+          <h3 className="text-sm font-medium text-slate-700">Employee Incentives</h3>
+        </div>
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600"><tr>
             <th className="p-3 text-left">Employee</th><th className="p-3 text-left">Role</th><th className="p-3 text-right">Base Incentive</th>
             <th className="p-3 text-right">Multiplier</th><th className="p-3 text-right">Final Incentive</th><th className="p-3 w-6"></th>
           </tr></thead>
           <tbody>
-            {rows.map((r) => (
+            {employees.length === 0 && (
+              <tr><td colSpan={6} className="p-4 text-center text-slate-400">No incentive data for this period</td></tr>
+            )}
+            {employees.map((r) => (
               <tr key={r.employeeId} onClick={() => onDrill(r.employeeName, { employeeId: r.employeeId })}
                 className="border-t border-slate-100 hover:bg-blue-50/50 cursor-pointer transition-colors">
                 <td className="p-3"><p className="font-medium text-slate-900">{r.employeeName}</p><p className="text-xs text-slate-400">{r.employeeId}</p></td>
@@ -303,23 +298,42 @@ function EmployeeDetailView({ data }: { data: Record<string, unknown> }) {
 }
 
 function ElectronicsDetail({ data }: { data: Record<string, unknown> }) {
-  const standing = data.currentStanding as { department: string; deptTarget: number; deptActual: number; achievementPct: number; currentMultiplierPct: number; baseIncentive: number; finalIncentive: number } | null;
+  const standing = data.currentStanding as { storeTarget: number; storeActual: number; achievementPct: number; currentMultiplierPct: number; baseIncentive: number; finalIncentive: number } | null;
   const tiers = data.multiplierTiers as Array<{ from: number; to: number; multiplierPct: number; isCurrentTier: boolean; incentiveAtTier: number }>;
+  const departments = data.departments as Array<{ department: string; target: number; actual: number; achievementPct: number }> | undefined;
   if (!standing) return null;
 
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat icon={<Briefcase size={16} />} label="Department" value={standing.department} />
-        <Stat icon={<TrendingUp size={16} />} label="Achievement" value={`${standing.achievementPct}%`} />
+        <Stat icon={<TrendingUp size={16} />} label="Store Achievement" value={`${standing.achievementPct}%`} />
+        <Stat icon={<TrendingUp size={16} />} label="Multiplier" value={`${standing.currentMultiplierPct}%`} />
         <Stat icon={<TrendingUp size={16} />} label="Base Incentive" value={formatInr(standing.baseIncentive)} />
         <Stat icon={<TrendingUp size={16} />} label="Final Incentive" value={formatInr(standing.finalIncentive)} />
       </div>
       <div className="rounded-xl border border-slate-200 bg-white p-5">
-        <h4 className="font-medium text-slate-900 mb-1">Department Progress</h4>
-        <p className="text-xs text-slate-500 mb-3">Target: {formatInr(standing.deptTarget)} | Actual: {formatInr(standing.deptActual)}</p>
+        <h4 className="font-medium text-slate-900 mb-1">Store Progress</h4>
+        <p className="text-xs text-slate-500 mb-3">Target: {formatInr(standing.storeTarget)} | Actual: {formatInr(standing.storeActual)}</p>
         <AchievementBar pct={standing.achievementPct} />
       </div>
+      {departments && departments.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <h4 className="font-medium text-slate-900 mb-3">Department Breakdown</h4>
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-600"><tr><th className="p-2 text-left">Department</th><th className="p-2 text-right">Target</th><th className="p-2 text-right">Actual</th><th className="p-2 text-right">Achievement</th></tr></thead>
+            <tbody>
+              {departments.map((d, i) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="p-2 font-medium">{d.department}</td>
+                  <td className="p-2 text-right">{formatInr(d.target)}</td>
+                  <td className="p-2 text-right">{formatInr(d.actual)}</td>
+                  <td className="p-2 text-right">{d.achievementPct}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="rounded-xl border border-slate-200 bg-white p-5">
         <h4 className="font-medium text-slate-900 mb-3">Multiplier Tiers</h4>
         <table className="w-full text-sm">
