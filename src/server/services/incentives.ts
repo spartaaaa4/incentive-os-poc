@@ -26,8 +26,7 @@ type Params = {
 
 export async function getIncentiveDrilldown(params: Params) {
   if (params.employeeId) return getEmployeeDetail(params);
-  if (params.storeCode && params.department) return getEmployeeList(params);
-  if (params.storeCode) return getDepartmentSummary(params);
+  if (params.storeCode) return getStoreDetail(params);
   if (params.city) return getStoreSummary(params);
   return getCitySummary(params);
 }
@@ -135,87 +134,58 @@ async function getStoreSummary(params: Params) {
   };
 }
 
-// ───── Level 3: Department summary ─────
+// ───── Level 3: Store detail (departments + employees) ─────
 
-async function getDepartmentSummary(params: Params) {
+async function getStoreDetail(params: Params) {
   const store = await db.storeMaster.findUnique({ where: { storeCode: params.storeCode! } });
-  if (!store) return { level: "department" as const, summary: {}, rows: [] };
+  if (!store) return { level: "storeDetail" as const, summary: {}, departments: [], employees: [] };
 
-  const ledger = await db.incentiveLedger.findMany({
-    where: { storeCode: params.storeCode!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd } },
-    select: { employeeId: true, finalIncentive: true, baseIncentive: true, achievementPct: true, multiplierApplied: true, calculationDetails: true, vertical: true, campaignId: true },
-  });
+  const [ledger, targets, salesAgg] = await Promise.all([
+    db.incentiveLedger.findMany({
+      where: { storeCode: params.storeCode!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd } },
+      include: { employee: true },
+    }),
+    db.target.findMany({
+      where: { storeCode: params.storeCode!, status: "ACTIVE", periodStart: { lte: params.periodEnd }, periodEnd: { gte: params.periodStart } },
+      select: { department: true, targetValue: true, vertical: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["department"] as const,
+      where: { storeCode: params.storeCode!, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE" },
+      _sum: { grossAmount: true },
+    }),
+  ]);
 
-  const targets = await db.target.findMany({
-    where: { storeCode: params.storeCode!, status: "ACTIVE", periodStart: { lte: params.periodEnd }, periodEnd: { gte: params.periodStart } },
-    select: { department: true, targetValue: true, vertical: true },
-  });
-
-  const sales = await db.salesTransaction.findMany({
-    where: { storeCode: params.storeCode!, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE" },
-    select: { department: true, grossAmount: true, vertical: true },
-  });
-
-  type DeptBucket = { target: number; actual: number; incentive: number; employees: Set<string>; multiplierPct: number; vertical: string };
+  // Department target/achievement summary
+  const salesByDept = new Map(salesAgg.map((s) => [s.department ?? "OTHER", asNumber(s._sum.grossAmount)]));
+  type DeptBucket = { target: number; actual: number; vertical: string };
   const deptMap = new Map<string, DeptBucket>();
-
-  const ensureDept = (dept: string, vertical: string) => {
-    if (!deptMap.has(dept)) deptMap.set(dept, { target: 0, actual: 0, incentive: 0, employees: new Set(), multiplierPct: 0, vertical });
-    return deptMap.get(dept)!;
-  };
-
   for (const t of targets) {
     const dept = t.department ?? (t.vertical === "GROCERY" ? "GROCERY" : t.vertical === "FNL" ? "APPAREL" : "OTHER");
-    ensureDept(dept, t.vertical).target += asNumber(t.targetValue);
+    const existing = deptMap.get(dept);
+    deptMap.set(dept, {
+      target: (existing?.target ?? 0) + asNumber(t.targetValue),
+      actual: salesByDept.get(dept) ?? 0,
+      vertical: t.vertical,
+    });
   }
-  for (const s of sales) {
-    const dept = s.department ?? (s.vertical === "GROCERY" ? "GROCERY" : "APPAREL");
-    ensureDept(dept, s.vertical).actual += asNumber(s.grossAmount);
-  }
-  for (const r of ledger) {
-    const details = r.calculationDetails as Record<string, unknown> | null;
-    const dept = (details?.department as string) ?? (r.vertical === "GROCERY" ? "GROCERY" : r.vertical === "FNL" ? "APPAREL" : "OTHER");
-    const bucket = ensureDept(dept, r.vertical);
-    bucket.incentive += asNumber(r.finalIncentive);
-    bucket.employees.add(r.employeeId);
-    if (r.multiplierApplied != null) bucket.multiplierPct = asNumber(r.multiplierApplied);
+  // Ensure departments with sales but no target still show
+  for (const [dept] of salesByDept) {
+    if (!deptMap.has(dept)) deptMap.set(dept, { target: 0, actual: salesByDept.get(dept) ?? 0, vertical: store.vertical });
   }
 
-  const rows = [...deptMap.entries()].map(([department, b]) => ({
+  const departments = [...deptMap.entries()].map(([department, b]) => ({
     department,
     vertical: b.vertical,
     target: Math.round(b.target),
     actual: Math.round(b.actual),
     achievementPct: b.target > 0 ? Math.round((b.actual / b.target) * 1000) / 10 : 0,
-    multiplierPct: b.multiplierPct,
-    totalIncentive: Math.round(b.incentive),
-    employeeCount: b.employees.size,
-  })).sort((a, b) => b.totalIncentive - a.totalIncentive);
+  })).sort((a, b) => b.actual - a.actual);
 
-  return {
-    level: "department" as const,
-    summary: { storeCode: store.storeCode, storeName: store.storeName, vertical: store.vertical, totalIncentive: rows.reduce((s, r) => s + r.totalIncentive, 0) },
-    rows,
-  };
-}
-
-// ───── Level 4: Employee list ─────
-
-async function getEmployeeList(params: Params) {
-  const ledger = await db.incentiveLedger.findMany({
-    where: { storeCode: params.storeCode!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd } },
-    include: { employee: true },
-  });
-
-  const filtered = ledger.filter((r) => {
-    const details = r.calculationDetails as Record<string, unknown> | null;
-    const dept = (details?.department as string) ?? (r.vertical === "GROCERY" ? "GROCERY" : r.vertical === "FNL" ? "APPAREL" : "OTHER");
-    return dept === params.department;
-  });
-
+  // Employee incentive list (store-level, not department-level)
   type EmpBucket = { name: string; role: string; base: number; final: number; multiplier: number; achievement: number };
   const empMap = new Map<string, EmpBucket>();
-  for (const r of filtered) {
+  for (const r of ledger) {
     const existing = empMap.get(r.employeeId);
     empMap.set(r.employeeId, {
       name: r.employee?.employeeName ?? r.employeeId,
@@ -227,29 +197,22 @@ async function getEmployeeList(params: Params) {
     });
   }
 
-  const targets = await db.target.findMany({
-    where: { storeCode: params.storeCode!, department: params.department!, status: "ACTIVE", periodStart: { lte: params.periodEnd }, periodEnd: { gte: params.periodStart } },
-    select: { targetValue: true },
-  });
-  const totalTarget = targets.reduce((s, t) => s + asNumber(t.targetValue), 0);
-  const totalActual = filtered.length > 0 ? asNumber((filtered[0].calculationDetails as Record<string, unknown>)?.actual ?? 0) : 0;
-
-  const rows = [...empMap.entries()].map(([employeeId, b]) => ({
+  const employees = [...empMap.entries()].map(([employeeId, b]) => ({
     employeeId, employeeName: b.name, role: b.role,
     baseIncentive: Math.round(b.base), multiplierPct: b.multiplier,
     achievementPct: Math.round(b.achievement * 10) / 10, finalIncentive: Math.round(b.final),
   })).sort((a, b) => b.finalIncentive - a.finalIncentive);
 
+  const totalIncentive = employees.reduce((s, e) => s + e.finalIncentive, 0);
+
   return {
-    level: "employees" as const,
+    level: "storeDetail" as const,
     summary: {
-      department: params.department!,
-      target: Math.round(totalTarget),
-      actual: Math.round(totalActual),
-      achievementPct: totalTarget > 0 ? Math.round((totalActual / totalTarget) * 1000) / 10 : 0,
-      multiplierPct: rows[0]?.multiplierPct ?? 0,
+      storeCode: store.storeCode, storeName: store.storeName, vertical: store.vertical,
+      totalIncentive, employeeCount: employees.length,
     },
-    rows,
+    departments,
+    employees,
   };
 }
 
@@ -290,10 +253,10 @@ async function getEmployeeDetail(params: Params) {
 async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: Params) {
   const row = ledgerRows[0];
   const details = row.calculationDetails as Record<string, unknown>;
-  const department = details.department as string;
-  const target = asNumber(details.target);
-  const actual = asNumber(details.actual);
-  const achievementPct = target > 0 ? Math.round((actual / target) * 1000) / 10 : 0;
+  const storeTarget = asNumber(details.storeTarget);
+  const storeActual = asNumber(details.storeActual);
+  const departments = (details.departments ?? {}) as Record<string, { target: number; actual: number; achievementPct: number; multiplierPct: number }>;
+  const achievementPct = storeTarget > 0 ? Math.round((storeActual / storeTarget) * 1000) / 10 : 0;
   const base = asNumber(row.baseIncentive);
   const currentMultiplier = asNumber(row.multiplierApplied);
   const final = asNumber(row.finalIncentive);
@@ -310,14 +273,20 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
   const next = currentIdx >= 0 && currentIdx < multipliers.length - 1 ? multipliers[currentIdx + 1] : null;
   const nudge = next ? `Reach ${next.from}% to unlock ${next.multiplierPct}% multiplier (${fmtInr(next.incentiveAtTier)} — ${fmtInr(next.incentiveAtTier - final)} more).` : "";
 
+  const deptBreakdown = Object.entries(departments).map(([dept, d]) => ({
+    department: dept, target: Math.round(d.target), actual: Math.round(d.actual),
+    achievementPct: Math.round(d.achievementPct * 10) / 10,
+  }));
+
   return {
     level: "employeeDetail" as const,
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
     vertical: "ELECTRONICS",
     period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
-    currentStanding: { department, deptTarget: Math.round(target), deptActual: Math.round(actual), achievementPct, currentMultiplierPct: currentMultiplier, baseIncentive: Math.round(base), finalIncentive: Math.round(final) },
+    currentStanding: { storeTarget: Math.round(storeTarget), storeActual: Math.round(storeActual), achievementPct, currentMultiplierPct: currentMultiplier, baseIncentive: Math.round(base), finalIncentive: Math.round(final) },
+    departments: deptBreakdown,
     multiplierTiers: multipliers,
-    message: `Your department is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
+    message: `Store is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
   };
 }
 

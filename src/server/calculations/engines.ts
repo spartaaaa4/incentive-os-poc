@@ -39,11 +39,6 @@ function isElectronicsExcluded(brand: string | null, familyCode: string | null):
   return false;
 }
 
-const disqualifyingAttendanceStatuses = new Set<AttendanceStatus>([
-  AttendanceStatus.ABSENT,
-  AttendanceStatus.LEAVE_APPROVED,
-  AttendanceStatus.LEAVE_UNAPPROVED,
-]);
 
 function brandMatches(brandFilter: string, brand: string | null): boolean {
   if (!brand) return false;
@@ -97,13 +92,19 @@ async function calculateElectronics(input: RecalculateInput) {
     });
 
     const deptActual = new Map<string, number>();
-    const employeeDeptBase = new Map<string, { employeeId: string; department: string; base: number }>();
+    const employeeBase = new Map<string, number>();
 
     for (const txn of txns) {
-      if (!txn.employee || txn.employee.role !== EmployeeRole.SA) continue;
+      if (!txn.employee) continue;
       if (txn.employee.payrollStatus !== PayrollStatus.ACTIVE) continue;
       if (isElectronicsExcluded(txn.brand, txn.productFamilyCode)) continue;
       if (!txn.department || !txn.quantity || !txn.productFamilyCode) continue;
+
+      // All eligible sales count toward department achievement
+      deptActual.set(txn.department, (deptActual.get(txn.department) ?? 0) + asNumber(txn.grossAmount));
+
+      // Only SAs earn per-unit incentive (SM/BA sales → achievement only)
+      if (txn.employee.role !== EmployeeRole.SA) continue;
 
       const unitPrice = asNumber(txn.grossAmount) / txn.quantity;
       const familyName = familyCodeToName[txn.productFamilyCode] ?? txn.productFamilyCode;
@@ -117,14 +118,7 @@ async function calculateElectronics(input: RecalculateInput) {
       if (!matchingSlab) continue;
 
       const base = asNumber(matchingSlab.incentivePerUnit) * txn.quantity;
-      const groupKey = `${txn.employeeId}|${txn.department}`;
-      const current = employeeDeptBase.get(groupKey);
-      employeeDeptBase.set(groupKey, {
-        employeeId: txn.employeeId!,
-        department: txn.department,
-        base: (current?.base ?? 0) + base,
-      });
-      deptActual.set(txn.department, (deptActual.get(txn.department) ?? 0) + asNumber(txn.grossAmount));
+      employeeBase.set(txn.employeeId!, (employeeBase.get(txn.employeeId!) ?? 0) + base);
     }
 
     const targets = await db.target.findMany({
@@ -143,10 +137,10 @@ async function calculateElectronics(input: RecalculateInput) {
       deptTargets.set(target.department, (deptTargets.get(target.department) ?? 0) + asNumber(target.targetValue));
     }
 
-    const ledgerRows = [];
-    for (const row of employeeDeptBase.values()) {
-      const target = deptTargets.get(row.department) ?? 0;
-      const actual = deptActual.get(row.department) ?? 0;
+    // Compute per-department achievement and multiplier
+    const deptAchievement = new Map<string, { target: number; actual: number; achievementPct: number; multiplierPct: number }>();
+    for (const [dept, actual] of deptActual.entries()) {
+      const target = deptTargets.get(dept) ?? 0;
       const achievementPct = target > 0 ? (actual / target) * 100 : 0;
       const multiplier =
         plan.achievementMultipliers.find(
@@ -154,23 +148,40 @@ async function calculateElectronics(input: RecalculateInput) {
             achievementPct >= asNumber(item.achievementFrom) &&
             achievementPct <= asNumber(item.achievementTo),
         )?.multiplierPct ?? 0;
+      deptAchievement.set(dept, { target, actual, achievementPct, multiplierPct: asNumber(multiplier) });
+    }
 
+    // Compute a store-level weighted average multiplier for each SA
+    // SA sells across departments; each department has its own multiplier
+    // We use the store's overall achievement (total actual / total target) for the multiplier
+    const totalStoreTarget = [...deptTargets.values()].reduce((s, v) => s + v, 0);
+    const totalStoreActual = [...deptActual.values()].reduce((s, v) => s + v, 0);
+    const storeAchievementPct = totalStoreTarget > 0 ? (totalStoreActual / totalStoreTarget) * 100 : 0;
+    const storeMultiplier =
+      plan.achievementMultipliers.find(
+        (item) =>
+          storeAchievementPct >= asNumber(item.achievementFrom) &&
+          storeAchievementPct <= asNumber(item.achievementTo),
+      )?.multiplierPct ?? 0;
+
+    const ledgerRows = [];
+    for (const [employeeId, base] of employeeBase.entries()) {
       ledgerRows.push({
         planId: plan.id,
-        employeeId: row.employeeId,
+        employeeId,
         storeCode,
         vertical: Vertical.ELECTRONICS,
         periodStart: startOfMonth(input.periodStart),
         periodEnd: endOfMonth(input.periodEnd),
-        baseIncentive: row.base,
-        multiplierApplied: asNumber(multiplier),
-        achievementPct,
-        finalIncentive: row.base * (asNumber(multiplier) / 100),
+        baseIncentive: base,
+        multiplierApplied: asNumber(storeMultiplier),
+        achievementPct: storeAchievementPct,
+        finalIncentive: base * (asNumber(storeMultiplier) / 100),
         calculationStatus: "FINAL" as const,
         calculationDetails: {
-          department: row.department,
-          target,
-          actual,
+          storeTarget: totalStoreTarget,
+          storeActual: totalStoreActual,
+          departments: Object.fromEntries(deptAchievement),
         },
       });
     }
@@ -320,16 +331,24 @@ async function calculateFnL(input: RecalculateInput) {
     }
 
     const storeIncentive = actualSales * 0.01;
-    const employees = await db.employeeMaster.findMany({
-      where: { storeCode: target.storeCode, payrollStatus: PayrollStatus.ACTIVE },
+    const allEmployees = await db.employeeMaster.findMany({
+      where: { storeCode: target.storeCode },
     });
-    const smCount = employees.filter((employee) => employee.role === EmployeeRole.SM).length;
-    const dmCount = employees.filter((employee) => employee.role === EmployeeRole.DM).length;
+    const activeEmployees = allEmployees.filter((e) =>
+      e.payrollStatus === PayrollStatus.ACTIVE ||
+      e.payrollStatus === PayrollStatus.NOTICE_PERIOD ||
+      e.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION
+    );
+    const smCount = activeEmployees.filter((employee) => employee.role === EmployeeRole.SM).length;
+    const dmCount = activeEmployees.filter((employee) => employee.role === EmployeeRole.DM).length;
     const split = plan.fnlRoleSplits.find((row) => row.numSms === smCount && row.numDms === dmCount);
     if (!split) continue;
 
+    // Notice-period/disciplinary excluded at disbursement, not from denominator
+    const disbursableEmployees = activeEmployees.filter((e) => e.payrollStatus === PayrollStatus.ACTIVE);
+
     const eligibleSAs: string[] = [];
-    const saEmployees = employees.filter((employee) => employee.role === EmployeeRole.SA);
+    const saEmployees = disbursableEmployees.filter((employee) => employee.role === EmployeeRole.SA);
     const saIds = saEmployees.map((e) => e.employeeId);
     const allAttendance = saIds.length
       ? await db.attendance.findMany({
@@ -348,10 +367,7 @@ async function calculateFnL(input: RecalculateInput) {
     for (const employee of saEmployees) {
       const weekAttendance = attendanceByEmp.get(employee.employeeId) ?? [];
       const presentDays = weekAttendance.filter((day) => day.status === AttendanceStatus.PRESENT).length;
-      const disqualifyingDays = weekAttendance.filter((day) =>
-        disqualifyingAttendanceStatuses.has(day.status),
-      ).length;
-      if (presentDays >= 5 && disqualifyingDays === 0) {
+      if (presentDays >= 5) {
         eligibleSAs.push(employee.employeeId);
       }
     }
@@ -362,7 +378,7 @@ async function calculateFnL(input: RecalculateInput) {
     const dmPayout = storeIncentive * (asNumber(split.dmSharePerDmPct) / 100);
 
     const payoutRows = [];
-    for (const employee of employees) {
+    for (const employee of disbursableEmployees) {
       if (employee.role === EmployeeRole.SA && eligibleSAs.includes(employee.employeeId)) {
         payoutRows.push({ employeeId: employee.employeeId, amount: eachSaPayout });
       }
