@@ -1,4 +1,5 @@
 import { addDays } from "date-fns";
+import bcrypt from "bcryptjs";
 import {
   PrismaClient,
 } from "@prisma/client";
@@ -147,13 +148,14 @@ async function main() {
     });
   }
   await prisma.employeeMaster.createMany({ data: employeeRows });
-  await prisma.userCredential.createMany({
-    data: employeeRows.map((employee) => ({
+  const credentialData = await Promise.all(
+    employeeRows.map(async (employee) => ({
       employerId: employee.employeeId,
       employeeId: employee.employeeId,
-      password: generateDemoPassword(employee.employeeId),
+      password: await bcrypt.hash(generateDemoPassword(employee.employeeId), 10),
     })),
-  });
+  );
+  await prisma.userCredential.createMany({ data: credentialData });
 
   const electronicsPlan = await prisma.incentivePlan.create({
     data: {

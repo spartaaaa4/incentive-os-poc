@@ -9,7 +9,15 @@ export interface JwtPayload {
   storeCode: string;
 }
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "incentive-os-dev-secret-change-in-production";
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret && process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET environment variable is required in production");
+  }
+  return secret ?? "incentive-os-dev-secret-local-only";
+}
+
+const JWT_SECRET = getJwtSecret();
 const TOKEN_EXPIRY = "7d";
 
 export function signToken(payload: JwtPayload): string {
