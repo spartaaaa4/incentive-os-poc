@@ -42,3 +42,4 @@ build = ["npm", "run", "build"]
 
 [userenv.shared]
 ENABLE_SEED = "true"
+JWT_SECRET = "d6891cf062e34b6705353055c70abc39d4177a119af178911475a9258c3028e8"
