@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
 import { signToken } from "@/lib/auth";
 
@@ -21,7 +22,12 @@ export async function POST(request: Request) {
       include: { employee: { include: { store: true } } },
     });
 
-    if (!credential || !credential.isActive || credential.password !== password) {
+    if (!credential || !credential.isActive) {
+      return NextResponse.json({ error: "Invalid employer ID or password" }, { status: 401 });
+    }
+
+    const passwordMatch = await bcrypt.compare(password, credential.password);
+    if (!passwordMatch) {
       return NextResponse.json({ error: "Invalid employer ID or password" }, { status: 401 });
     }
 

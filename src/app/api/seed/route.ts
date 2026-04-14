@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { addDays } from "date-fns";
+import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
 import {
   ApprovalStatus,
@@ -25,6 +26,11 @@ function rng(seed: number): () => number {
     value = (value * 9301 + 49297) % 233280;
     return value / 233280;
   };
+}
+
+function generateDemoPassword(employeeId: string): string {
+  const numeric = employeeId.replace(/\D/g, "").padStart(3, "0");
+  return `Demo@${numeric}${String(employeeId.length).padStart(2, "0")}`;
 }
 
 const stores = [
@@ -110,6 +116,7 @@ export async function POST(request: Request) {
       await db.achievementMultiplier.deleteMany();
       await db.fnlRoleSplit.deleteMany();
       await db.incentivePlan.deleteMany();
+      await db.userCredential.deleteMany();
       await db.employeeMaster.deleteMany();
       await db.storeMaster.deleteMany();
     }
@@ -160,6 +167,15 @@ export async function POST(request: Request) {
       });
     }
     await db.employeeMaster.createMany({ data: employeeRows });
+
+    const credentialData = await Promise.all(
+      employeeRows.map(async (employee) => ({
+        employerId: employee.employeeId,
+        employeeId: employee.employeeId,
+        password: await bcrypt.hash(generateDemoPassword(employee.employeeId), 10),
+      })),
+    );
+    await db.userCredential.createMany({ data: credentialData });
 
     const elecPlan = await db.incentivePlan.create({
       data: { planName: "Electronics Monthly Per Unit Plan", vertical: Vertical.ELECTRONICS, formulaType: "PER_UNIT", periodType: PeriodType.MONTHLY, status: ApprovalStatus.ACTIVE, version: 1, effectiveFrom: new Date("2026-04-01"), createdBy: "system", approvedBy: "checker", submittedBy: "maker" },
