@@ -135,9 +135,25 @@ model EmployeeMaster {
   attendance      Attendance[]
   sales           SalesTransaction[]
   incentiveLedger IncentiveLedger[]
+  credential      UserCredential?
 
   @@index([storeCode])
   @@map("employee_master")
+}
+
+model UserCredential {
+  id             Int            @id @default(autoincrement())
+  employerId     String         @unique @map("employer_id") @db.VarChar(64)
+  employeeId     String         @unique @map("employee_id") @db.VarChar(64)
+  password       String         @map("password")
+  isActive       Boolean        @default(true) @map("is_active")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  lastLoginAt    DateTime?      @map("last_login_at")
+  employee       EmployeeMaster @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+
+  @@index([employerId, isActive])
+  @@map("user_credential")
 }
 
 model Attendance {
