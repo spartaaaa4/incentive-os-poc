@@ -1,0 +1,33 @@
+Prompt for Replit Claude agent:
+> Connect this React app to the Incentive OS backend API. The API is already deployed and running. Here is everything you need:
+>
+> API Base URL: [PASTE YOUR REPLIT API URL HERE, e.g. https://incentive-os-poc.youruser.repl.co]
+>
+> Auth flow:
+> - Login endpoint: POST /api/auth/login (public, no token needed)
+> - Body: { "employerId": "E001", "password": "Demo@00104" }
+> - Returns: { "ok": true, "token": "...", "user": { "employerId", "employeeId", "employeeName", "role", "storeCode", "storeName", "vertical" } }
+> - The token is a JWT (valid for 7 days). Store it in localStorage or app state.
+> - Every subsequent API call must include the header: Authorization: Bearer <token>
+> - To verify a session on app load, call GET /api/auth/me with the Bearer token. It returns the user profile if valid, or 401 if expired.
+>
+> Available API endpoints (all require Bearer token):
+> - GET /api/auth/me — current user profile
+> - GET /api/sales — sales transactions (query params: vertical, transactionType, storeCode, employeeId, dateFrom, dateTo)
+> - GET /api/sales/filters — filter dropdown options
+> - GET /api/dashboard — dashboard metrics
+> - GET /api/incentives — incentive ledger
+> - GET /api/targets — targets
+> - GET /api/rules — incentive rules
+> - GET /api/approvals — approval queue
+> - POST /api/approvals/action — approve/reject (body: { entityType, entityId, action, reason? })
+> - GET /api/health — health check (public, no token)
+>
+> What to implement:
+> 1. Create an API client/service that wraps fetch with the base URL and automatically attaches the Bearer token from storage.
+> 2. Build a login screen where users enter employerId and password. On success, store the token and user info, then navigate to the main app.
+> 3. On app load, check for a stored token and call /api/auth/me to validate it. If 401, redirect to login.
+> 4. If any API call returns 401, clear the token and redirect to login.
+> 5. The logged-in user's role determines what they see: SA (Sales Associate) and BA (Brand Associate) see their own data; SM (Store Manager) and DM (Department Manager) see store-level data.
+>
+> CORS is already configured on the API side — the Authorization header is allowed in preflight. If you get CORS errors, make sure the API's ALLOWED_ORIGIN env var includes this app's URL.
