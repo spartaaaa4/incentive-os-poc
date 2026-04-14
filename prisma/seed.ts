@@ -38,6 +38,11 @@ function rng(seed: number): () => number {
   };
 }
 
+function generateDemoPassword(employeeId: string): string {
+  const numeric = employeeId.replace(/\D/g, "").padStart(3, "0");
+  return `Demo@${numeric}${String(employeeId.length).padStart(2, "0")}`;
+}
+
 const stores: StoreSeed[] = [
   { storeCode: "3675", storeName: "Bijapur KA", vertical: Vertical.ELECTRONICS, storeFormat: "Reliance Digital", state: "Karnataka", city: "Bijapur" },
   { storeCode: "4201", storeName: "Andheri MH", vertical: Vertical.ELECTRONICS, storeFormat: "Reliance Digital", state: "Maharashtra", city: "Mumbai" },
@@ -96,6 +101,7 @@ async function main() {
   await prisma.target.deleteMany();
   await prisma.salesTransaction.deleteMany();
   await prisma.attendance.deleteMany();
+  await prisma.userCredential.deleteMany();
   await prisma.employeeMaster.deleteMany();
   await prisma.storeMaster.deleteMany();
 
@@ -141,6 +147,13 @@ async function main() {
     });
   }
   await prisma.employeeMaster.createMany({ data: employeeRows });
+  await prisma.userCredential.createMany({
+    data: employeeRows.map((employee) => ({
+      employerId: employee.employeeId,
+      employeeId: employee.employeeId,
+      password: generateDemoPassword(employee.employeeId),
+    })),
+  });
 
   const electronicsPlan = await prisma.incentivePlan.create({
     data: {
