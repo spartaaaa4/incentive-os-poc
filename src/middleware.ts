@@ -3,7 +3,14 @@ import { verifyToken } from "@/lib/auth";
 
 const PUBLIC_ROUTES = [
   "/api/auth/login",
+  "/api/auth/me",
   "/api/health",
+  "/api/dashboard",
+  "/api/incentives",
+  "/api/sales",
+  "/api/approvals",
+  "/api/targets",
+  "/api/rules",
 ];
 
 const INTERNAL_ROUTES = [
