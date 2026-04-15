@@ -249,9 +249,16 @@ async function getEmployeeDetail(params: Params) {
   return buildFnlDetail(employee, ledgerRows, params);
 }
 
-const familyCodeToName: Record<string, string> = {
-  FF01: "Laptops & Desktops", FF03: "Tablets", FH07: "Photography",
-  FK01: "Wireless Phones", FH01: "Home Entertainment TVs", FJ03: "Large Appliances",
+const familyCodeToSlabNames: Record<string, string[]> = {
+  FF01: ["Laptops & Desktops"], FF03: ["Tablets"],
+  FH01: ["Home Entertainment TVs"], FH07: ["Photography"],
+  FK01: ["Wireless Phones"],
+  FI01: ["SDA & Consumer Appliances"], FI02: ["SDA & Consumer Appliances"],
+  FI04: ["SDA & Consumer Appliances"], FI05: ["SDA & Consumer Appliances"],
+  FI06: ["SDA & Consumer Appliances"], FI07: ["SDA & Consumer Appliances"],
+  FJ01: ["Large Appliances"], FJ02: ["Large Appliances"],
+  FJ03: ["Large Appliances", "Large Washing Machines (LWC)"],
+  FJ04: ["Large Appliances"], FJ05: ["Large Appliances"],
 };
 
 function isElectronicsExcluded(brand: string | null, familyCode: string | null): boolean {
@@ -282,10 +289,11 @@ function brandMatches(brandFilter: string, brand: string | null): boolean {
 async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: Params) {
   const row = ledgerRows[0];
   const details = row.calculationDetails as Record<string, unknown>;
-  const storeTarget = asNumber(details.storeTarget);
-  const storeActual = asNumber(details.storeActual);
+  const empDept = (details.employeeDepartment as string) ?? null;
+  const departmentTarget = asNumber(details.departmentTarget);
+  const departmentActual = asNumber(details.departmentActual);
   const departments = (details.departments ?? {}) as Record<string, { target: number; actual: number; achievementPct: number; multiplierPct: number }>;
-  const achievementPct = storeTarget > 0 ? Math.round((storeActual / storeTarget) * 1000) / 10 : 0;
+  const achievementPct = departmentTarget > 0 ? Math.round((departmentActual / departmentTarget) * 1000) / 10 : 0;
   const base = asNumber(row.baseIncentive);
   const currentMultiplier = asNumber(row.multiplierApplied);
   const final = asNumber(row.finalIncentive);
@@ -325,13 +333,14 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
 
   const recentSales = txns.map((txn) => {
     const unitPrice = asNumber(txn.grossAmount) / (txn.quantity || 1);
-    const familyName = familyCodeToName[txn.productFamilyCode ?? ""] ?? txn.productFamilyCode ?? "Other";
+    const slabNames = familyCodeToSlabNames[txn.productFamilyCode ?? ""];
+    const familyName = slabNames?.[0] ?? txn.productFamilyCode ?? "Other";
     const excluded = isElectronicsExcluded(txn.brand, txn.productFamilyCode);
     let incentiveEarned = 0;
-    if (!excluded && txn.productFamilyCode) {
+    if (!excluded && slabNames) {
       const slab = slabs.find(
         (s: { productFamily: string; brandFilter: string; priceFrom: unknown; priceTo: unknown }) =>
-          s.productFamily.toLowerCase().includes(familyName.toLowerCase().replace(" & ", " ")) &&
+          slabNames.some((name) => s.productFamily === name) &&
           brandMatches(s.brandFilter, txn.brand) &&
           unitPrice >= asNumber(s.priceFrom) && unitPrice <= asNumber(s.priceTo),
       );
@@ -354,11 +363,16 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
     vertical: "ELECTRONICS",
     period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
-    currentStanding: { storeTarget: Math.round(storeTarget), storeActual: Math.round(storeActual), achievementPct, currentMultiplierPct: currentMultiplier, baseIncentive: Math.round(base), finalIncentive: Math.round(final) },
+    currentStanding: {
+      employeeDepartment: empDept,
+      departmentTarget: Math.round(departmentTarget), departmentActual: Math.round(departmentActual),
+      achievementPct, currentMultiplierPct: currentMultiplier,
+      baseIncentive: Math.round(base), finalIncentive: Math.round(final),
+    },
     departments: deptBreakdown,
     multiplierTiers: multipliers,
     recentSales,
-    message: `Store is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
+    message: `${empDept ?? "Department"} is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
   };
 }
 
