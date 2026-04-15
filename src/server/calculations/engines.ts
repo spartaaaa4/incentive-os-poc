@@ -194,11 +194,13 @@ async function calculateElectronics(input: RecalculateInput) {
       deptAchievement.set(dept, { target, actual, achievementPct, multiplierPct: asNumber(multiplier) });
     }
 
-    // Each SA is mapped 1:1 to a department; their multiplier comes from
-    // their department's achievement, not a store-wide average.
+    // Create ledger rows for ALL active employees so every team member
+    // appears in the mobile app — not just those who earned a base incentive.
     const ledgerRows = [];
-    for (const [employeeId, base] of employeeBase.entries()) {
+    for (const emp of storeEmployees) {
+      const employeeId = emp.employeeId;
       const empDept = employeeDeptMap.get(employeeId);
+      const base = employeeBase.get(employeeId) ?? 0;
       const deptInfo = empDept ? deptAchievement.get(empDept) : undefined;
       const multiplierPct = deptInfo?.multiplierPct ?? 0;
       const achievementPct = deptInfo?.achievementPct ?? 0;
