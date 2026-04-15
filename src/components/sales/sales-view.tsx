@@ -381,6 +381,7 @@ export function SalesView() {
             </>
           )}
         </div>
+      </div>
 
       {/* Data table */}
       <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
