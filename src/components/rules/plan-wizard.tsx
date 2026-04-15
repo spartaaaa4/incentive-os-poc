@@ -70,7 +70,7 @@ export function PlanWizard({ onClose, onCreated }: { onClose: () => void; onCrea
   const [campaignName, setCampaignName] = useState("April Campaign");
   const [campaignStart, setCampaignStart] = useState("2026-04-01");
   const [campaignEnd, setCampaignEnd] = useState("2026-04-30");
-  const [distributionRule, setDistributionRule] = useState<"EQUAL" | "WEIGHTED">("EQUAL");
+  const [distributionRule, setDistributionRule] = useState<"EQUAL">("EQUAL");
 
   const stepIdx = STEPS.indexOf(step);
   const canNext = () => {
@@ -333,10 +333,12 @@ export function PlanWizard({ onClose, onCreated }: { onClose: () => void; onCrea
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 mb-1">Distribution Rule</label>
-                  <select value={distributionRule} onChange={(e) => setDistributionRule(e.target.value as "EQUAL" | "WEIGHTED")}
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <select
+                    value={distributionRule}
+                    onChange={(e) => setDistributionRule(e.target.value as "EQUAL")}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
                     <option value="EQUAL">Equal (divide equally among eligible employees)</option>
-                    <option value="WEIGHTED">Weighted (by individual contribution)</option>
                   </select>
                 </div>
               </div>

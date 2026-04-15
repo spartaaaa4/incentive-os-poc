@@ -37,7 +37,7 @@ const wizardSchema = z.object({
   campaignName: z.string().optional(),
   campaignStart: z.string().optional(),
   campaignEnd: z.string().optional(),
-  distributionRule: z.enum(["EQUAL", "WEIGHTED"]).optional(),
+  distributionRule: z.enum(["EQUAL"]).optional(),
 });
 
 export async function POST(request: Request) {
@@ -105,7 +105,7 @@ export async function POST(request: Request) {
             startDate: new Date(d.campaignStart ?? d.effectiveFrom),
             endDate: new Date(d.campaignEnd ?? d.effectiveTo),
             channel: "OFFLINE",
-            distributionRule: d.distributionRule ?? "EQUAL",
+            distributionRule: "EQUAL",
             status: "DRAFT",
           },
         });
