@@ -25,6 +25,10 @@ export async function GET(request: NextRequest) {
       storeCode: employee.storeCode,
       storeName: employee.store.storeName,
       vertical: employee.store.vertical,
+      storeFormat: employee.store.storeFormat,
+      state: employee.store.state,
+      city: employee.store.city,
+      storeStatus: employee.store.storeStatus,
       payrollStatus: employee.payrollStatus,
     },
   });
