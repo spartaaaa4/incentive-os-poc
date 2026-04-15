@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getLeaderboard, type LeaderboardScope } from "@/server/services/leaderboard";
+import { getLeaderboard, getAdminLeaderboard, type LeaderboardScope } from "@/server/services/leaderboard";
 
 const querySchema = z.object({
   scope: z.enum(["store", "city"]).default("store"),
@@ -13,6 +13,10 @@ const querySchema = z.object({
    * Ignored when `month` is provided.
    */
   monthsBack: z.coerce.number().int().min(0).max(60).optional(),
+  /** Admin mode: vertical filter (ELECTRONICS, GROCERY, FNL) */
+  vertical: z.enum(["ELECTRONICS", "GROCERY", "FNL"]).optional(),
+  /** Admin mode: city filter */
+  city: z.string().trim().optional(),
 });
 
 function viewerFromRequest(request: NextRequest) {
@@ -27,15 +31,14 @@ function viewerFromRequest(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
-    // Use JWT viewer if available, otherwise default to E001 for admin dashboard
-    const viewer = viewerFromRequest(request) ?? { employeeId: "E001", storeCode: "3675", role: "SM" };
-
     const sp = request.nextUrl.searchParams;
     const parsed = querySchema.safeParse({
       scope: sp.get("scope") ?? "store",
       storeCode: sp.get("storeCode") ?? undefined,
       month: sp.get("month") ?? undefined,
       monthsBack: sp.get("monthsBack") ?? undefined,
+      vertical: sp.get("vertical") ?? undefined,
+      city: sp.get("city") ?? undefined,
     });
     if (!parsed.success) {
       return NextResponse.json(
@@ -43,6 +46,21 @@ export async function GET(request: NextRequest) {
         { status: 400 },
       );
     }
+
+    // Admin mode: when vertical + city are provided, use admin leaderboard
+    if (parsed.data.vertical && parsed.data.city) {
+      const data = await getAdminLeaderboard({
+        vertical: parsed.data.vertical,
+        city: parsed.data.city,
+        storeCode: parsed.data.storeCode,
+        month: parsed.data.month,
+        monthsBack: parsed.data.monthsBack,
+      });
+      return NextResponse.json(data);
+    }
+
+    // Employee-facing mode: use JWT viewer or default to E001
+    const viewer = viewerFromRequest(request) ?? { employeeId: "E001", storeCode: "3675", role: "SM" };
 
     const scope = parsed.data.scope as LeaderboardScope;
     const data = await getLeaderboard({

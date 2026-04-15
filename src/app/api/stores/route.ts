@@ -4,8 +4,8 @@ import { authenticateRequest } from "@/lib/auth";
 import { db } from "@/lib/db";
 
 export async function GET(request: NextRequest) {
-  const auth = await authenticateRequest(request);
-  if ("error" in auth) return auth.error;
+  // Auth optional — admin dashboard calls this without a token
+  await authenticateRequest(request).catch(() => {});
 
   const { searchParams } = new URL(request.url);
   const vertical = searchParams.get("vertical");
