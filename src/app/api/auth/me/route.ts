@@ -21,6 +21,7 @@ export async function GET(request: NextRequest) {
       employeeId: employee.employeeId,
       employeeName: employee.employeeName,
       role: employee.role,
+      department: employee.department,
       storeCode: employee.storeCode,
       storeName: employee.store.storeName,
       vertical: employee.store.vertical,
