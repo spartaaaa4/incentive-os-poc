@@ -150,7 +150,7 @@ export async function listSales(filters: SalesFilters) {
       store: true,
       employee: true,
     },
-    orderBy: { transactionDate: "desc" },
+    orderBy: [{ transactionDate: "desc" }, { transactionId: "desc" }],
     take: 500,
   });
 

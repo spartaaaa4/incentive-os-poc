@@ -99,11 +99,31 @@ export function SalesView() {
   const [showUpload, setShowUpload] = useState(false);
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([]);
   const [csvErrors, setCsvErrors] = useState<string[]>([]);
+  const [rowErrors, setRowErrors] = useState<Map<number, string[]>>(new Map());
   const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
   const [fileName, setFileName] = useState("");
   const [dragging, setDragging] = useState(false);
   const [showFieldRef, setShowFieldRef] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const VALID_VERTICALS = ["ELECTRONICS", "GROCERY", "FNL"];
+  const VALID_TX_TYPES = ["NORMAL", "SFS", "PAS", "JIOMART"];
+  const VALID_CHANNELS = ["OFFLINE", "ONLINE"];
+
+  function validateRow(row: Record<string, string>, index: number): string[] {
+    const errs: string[] = [];
+    const req = ["transactionId", "transactionDate", "storeCode", "vertical", "storeFormat", "articleCode", "quantity", "grossAmount", "taxAmount", "totalAmount", "transactionType", "channel"];
+    req.forEach((f) => { if (!row[f]?.trim()) errs.push(`Row ${index + 1}: "${f}" is required`); });
+    if (row.vertical && !VALID_VERTICALS.includes(row.vertical.trim().toUpperCase())) errs.push(`Row ${index + 1}: vertical must be ELECTRONICS, GROCERY, or FNL (got "${row.vertical}")`);
+    if (row.transactionType && !VALID_TX_TYPES.includes(row.transactionType.trim().toUpperCase())) errs.push(`Row ${index + 1}: transactionType must be NORMAL, SFS, PAS, or JIOMART (got "${row.transactionType}")`);
+    if (row.channel && !VALID_CHANNELS.includes(row.channel.trim().toUpperCase())) errs.push(`Row ${index + 1}: channel must be OFFLINE or ONLINE (got "${row.channel}")`);
+    if (row.quantity && (isNaN(Number(row.quantity)) || Number(row.quantity) <= 0 || !Number.isInteger(Number(row.quantity)))) errs.push(`Row ${index + 1}: quantity must be a positive integer (got "${row.quantity}")`);
+    ["grossAmount", "taxAmount", "totalAmount"].forEach((f) => {
+      if (row[f] && (isNaN(Number(row[f])) || Number(row[f]) < 0)) errs.push(`Row ${index + 1}: ${f} must be a non-negative number (got "${row[f]}")`);
+    });
+    return errs;
+  }
 
   useEffect(() => {
     fetch("/api/sales/filters")
@@ -157,7 +177,7 @@ export function SalesView() {
   const hasActiveFilters = Object.values(appliedFilters).some(Boolean);
 
   const previewRows = useMemo(() => csvRows.slice(0, 5), [csvRows]);
-  const validCount = csvRows.length - csvErrors.length;
+  const validCount = csvRows.length - rowErrors.size;
 
   const handleFile = async (file: File) => {
     setFileName(file.name);
@@ -184,8 +204,22 @@ export function SalesView() {
     const missing = expectedColumns.filter((c) => !headers.includes(c));
     if (missing.length) errors.push(`Missing columns: ${missing.join(", ")}`);
     if (parsed.errors.length) errors.push(...parsed.errors.map((e) => e.message));
+
+    const rowErrMap = new Map<number, string[]>();
+    if (!missing.length) {
+      normalizedRows.forEach((row, i) => {
+        const errs = validateRow(row, i);
+        if (errs.length) {
+          rowErrMap.set(i, errs);
+          errors.push(...errs);
+        }
+      });
+    }
+
     setCsvRows(normalizedRows);
     setCsvErrors(errors);
+    setRowErrors(rowErrMap);
+    setImportResult(null);
   };
 
   const importCsv = async () => {
@@ -202,10 +236,10 @@ export function SalesView() {
         setImporting(false);
         return;
       }
-      resetModal();
+      setImportResult({ imported: payload.imported ?? 0, skipped: payload.skipped ?? 0 });
       await loadRows(appliedFilters);
     } catch {
-      setCsvErrors(["Network error during import"]);
+      setCsvErrors(["Network error during import — check your connection and try again"]);
     }
     setImporting(false);
   };
@@ -214,6 +248,8 @@ export function SalesView() {
     setShowUpload(false);
     setCsvRows([]);
     setCsvErrors([]);
+    setRowErrors(new Map());
+    setImportResult(null);
     setFileName("");
     setShowFieldRef(false);
   };
@@ -481,32 +517,57 @@ export function SalesView() {
                 </div>
               </div>
 
+              {importResult && (
+                <div className={`rounded-lg border p-4 ${importResult.skipped > 0 && importResult.imported === 0 ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 size={16} className={importResult.imported > 0 ? "text-emerald-600 mt-0.5" : "text-amber-600 mt-0.5"} />
+                    <div className="text-sm">
+                      {importResult.imported > 0 && (
+                        <p className="font-medium text-emerald-800">{importResult.imported} row{importResult.imported !== 1 ? "s" : ""} imported successfully</p>
+                      )}
+                      {importResult.skipped > 0 && (
+                        <p className={`${importResult.imported > 0 ? "text-emerald-700 mt-0.5" : "font-medium text-amber-800"}`}>
+                          {importResult.skipped} row{importResult.skipped !== 1 ? "s" : ""} skipped — transaction IDs already exist in the database
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {csvRows.length > 0 && (
                 <div>
                   <h4 className="text-sm font-medium text-slate-900 mb-2">Step 3: Review and import</h4>
-                  <div className="flex gap-3 mb-3">
+                  <div className="flex flex-wrap gap-3 mb-3">
                     <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-2 text-sm">
                       <FileSpreadsheet size={14} className="text-slate-500" />
                       <span className="text-slate-600">{csvRows.length} total rows</span>
                     </div>
-                    {csvErrors.length === 0 ? (
+                    {rowErrors.size === 0 ? (
                       <div className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-sm">
                         <CheckCircle2 size={14} className="text-emerald-600" />
                         <span className="text-emerald-700">{validCount} valid — ready to import</span>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1.5 rounded-lg bg-red-50 px-3 py-2 text-sm">
-                        <AlertCircle size={14} className="text-red-600" />
-                        <span className="text-red-700">{csvErrors.length} error(s) — fix before importing</span>
-                      </div>
+                      <>
+                        <div className="flex items-center gap-1.5 rounded-lg bg-red-50 px-3 py-2 text-sm">
+                          <AlertCircle size={14} className="text-red-600" />
+                          <span className="text-red-700">{rowErrors.size} row{rowErrors.size !== 1 ? "s" : ""} with errors — fix before importing</span>
+                        </div>
+                        {validCount > 0 && (
+                          <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-2 text-sm">
+                            <span className="text-slate-600">{validCount} valid</span>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
 
                   {csvErrors.length > 0 && (
-                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 mb-3 space-y-1">
-                      {csvErrors.map((error) => (
-                        <p key={error} className="flex items-start gap-1.5">
-                          <AlertCircle size={12} className="mt-0.5 shrink-0" /> {error}
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 mb-3 space-y-1 max-h-40 overflow-y-auto">
+                      {csvErrors.map((error, i) => (
+                        <p key={i} className="flex items-start gap-1.5">
+                          <AlertCircle size={12} className="mt-0.5 shrink-0 text-red-500" /> {error}
                         </p>
                       ))}
                     </div>
@@ -525,21 +586,30 @@ export function SalesView() {
                         </tr>
                       </thead>
                       <tbody>
-                        {previewRows.map((row, i) => (
-                          <tr key={`${i}-${row.transactionId ?? "row"}`} className="border-t border-slate-100">
-                            <td className="px-2 py-1.5 text-slate-400">{i + 1}</td>
-                            {expectedColumns.map((col) => (
-                              <td key={`${i}-${col}`} className="px-2 py-1.5 text-slate-700 max-w-[120px] truncate">
-                                {row[col] ?? ""}
+                        {previewRows.map((row, i) => {
+                          const hasErr = rowErrors.has(i);
+                          return (
+                            <tr key={`${i}-${row.transactionId ?? "row"}`} className={`border-t ${hasErr ? "bg-red-50 border-red-100" : "border-slate-100"}`}>
+                              <td className={`px-2 py-1.5 font-medium ${hasErr ? "text-red-500" : "text-slate-400"}`}>
+                                {hasErr ? "!" : i + 1}
                               </td>
-                            ))}
-                          </tr>
-                        ))}
+                              {expectedColumns.map((col) => {
+                                const spec = columnSpec.find((s) => s.key === col);
+                                const isEmpty = spec?.required && !row[col]?.trim();
+                                return (
+                                  <td key={`${i}-${col}`} className={`px-2 py-1.5 max-w-[120px] truncate ${isEmpty ? "bg-red-100 text-red-700 font-medium" : hasErr ? "text-red-800" : "text-slate-700"}`}>
+                                    {row[col] ?? <span className="italic text-red-400">empty</span>}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                     {csvRows.length > 5 && (
                       <div className="border-t border-slate-100 px-3 py-2 text-xs text-slate-400 text-center">
-                        Showing 5 of {csvRows.length} rows
+                        Showing first 5 of {csvRows.length} rows preview
                       </div>
                     )}
                   </div>
@@ -550,14 +620,16 @@ export function SalesView() {
             <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200 bg-slate-50/50">
               <button onClick={resetModal}
                 className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
-                Cancel
+                {importResult ? "Close" : "Cancel"}
               </button>
-              <button
-                onClick={() => void importCsv()}
-                disabled={importing || csvRows.length === 0 || csvErrors.length > 0}
-                className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                {importing ? "Importing..." : `Import ${csvRows.length > 0 ? csvRows.length + " rows" : ""}`}
-              </button>
+              {!importResult && (
+                <button
+                  onClick={() => void importCsv()}
+                  disabled={importing || csvRows.length === 0 || csvErrors.length > 0}
+                  className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                  {importing ? "Importing..." : `Import ${csvRows.length > 0 ? csvRows.length + " rows" : ""}`}
+                </button>
+              )}
             </div>
           </div>
         </div>
