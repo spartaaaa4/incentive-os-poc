@@ -377,7 +377,7 @@ export function SalesView() {
             {appliedFilters.employeeId && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.employeeId}</span>}
             {appliedFilters.dateFrom && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">From {appliedFilters.dateFrom}</span>}
             {appliedFilters.dateTo && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">To {appliedFilters.dateTo}</span>}
-            {appliedFilters.search && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">"{appliedFilters.search}"</span>}
+            {appliedFilters.search && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">&quot;{appliedFilters.search}&quot;</span>}
             </>
           )}
         </div>
