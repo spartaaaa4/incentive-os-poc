@@ -27,9 +27,10 @@ const salesRowSchema = z.object({
 type SalesRow = z.infer<typeof salesRowSchema>;
 
 function parseDate(input: string): Date {
-  const [day, month, year] = input.split("/").map((value) => Number(value));
+  const clean = input.trim().replace(/^["']|["']$/g, "");
+  const [day, month, year] = clean.split("/").map((value) => Number(value));
   if (!day || !month || !year) {
-    return new Date(input);
+    return new Date(clean);
   }
   return new Date(Date.UTC(year, month - 1, day));
 }
@@ -68,32 +69,46 @@ export async function POST(request: Request) {
     return NextResponse.json({ imported: 0, errors }, { status: 400 });
   }
 
-  await db.salesTransaction.createMany({
-    data: validated.map((row) => ({
-      transactionId: row.transactionId,
-      transactionDate: parseDate(row.transactionDate),
-      storeCode: row.storeCode,
-      vertical: row.vertical as Vertical,
-      storeFormat: row.storeFormat,
-      employeeId: row.employeeId ?? null,
-      department: row.department ?? null,
-      articleCode: row.articleCode,
-      productFamilyCode: row.productFamilyCode ?? null,
-      brand: row.brand ?? null,
-      quantity: row.quantity,
-      grossAmount: row.grossAmount,
-      taxAmount: row.taxAmount,
-      totalAmount: row.totalAmount,
-      transactionType: row.transactionType as TransactionType,
-      channel: row.channel as Channel,
-    })),
-    skipDuplicates: true,
-  });
+  let parsedRows;
+  try {
+    parsedRows = validated.map((row) => {
+      const transactionDate = parseDate(row.transactionDate);
+      if (isNaN(transactionDate.getTime())) {
+        throw new Error(`Invalid date format for transaction ${row.transactionId}: "${row.transactionDate}". Use DD/MM/YYYY or ISO format.`);
+      }
+      return {
+        transactionId: row.transactionId,
+        transactionDate,
+        storeCode: row.storeCode,
+        vertical: row.vertical as Vertical,
+        storeFormat: row.storeFormat,
+        employeeId: row.employeeId ?? null,
+        department: row.department ?? null,
+        articleCode: row.articleCode,
+        productFamilyCode: row.productFamilyCode ?? null,
+        brand: row.brand ?? null,
+        quantity: row.quantity,
+        grossAmount: row.grossAmount,
+        taxAmount: row.taxAmount,
+        totalAmount: row.totalAmount,
+        transactionType: row.transactionType as TransactionType,
+        channel: row.channel as Channel,
+      };
+    });
+  } catch (e) {
+    return NextResponse.json({ imported: 0, errors: [(e as Error).message] }, { status: 400 });
+  }
 
-  const sortedDates = validated.map((row) => parseDate(row.transactionDate)).sort((a, b) => a.getTime() - b.getTime());
+  try {
+    await db.salesTransaction.createMany({ data: parsedRows, skipDuplicates: true });
+  } catch (e) {
+    return NextResponse.json({ imported: 0, errors: [`Database error: ${(e as Error).message}`] }, { status: 500 });
+  }
+
+  const sortedDates = parsedRows.map((r) => r.transactionDate).sort((a, b) => a.getTime() - b.getTime());
   if (sortedDates.length) {
     await recalculateByDateSpan(uniqueStores, sortedDates[0], sortedDates[sortedDates.length - 1]);
   }
 
-  return NextResponse.json({ imported: validated.length, errors: [] });
+  return NextResponse.json({ imported: parsedRows.length, errors: [] });
 }
