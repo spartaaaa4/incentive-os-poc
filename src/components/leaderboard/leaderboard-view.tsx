@@ -2,10 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { format, subMonths, startOfMonth } from "date-fns";
-import { Loader2, Trophy, Building2, MapPin, LogIn, LogOut, Calendar } from "lucide-react";
+import { Loader2, Trophy, Building2, MapPin, Calendar } from "lucide-react";
 import { formatInr, formatNumber } from "@/lib/format";
-
-const TOKEN_KEY = "incentive_os_token";
 
 type LeaderboardPeriod = {
   month: string;
@@ -65,12 +63,6 @@ function rollingMonthOptions(count: number): { value: string; label: string }[] 
 }
 
 export function LeaderboardView() {
-  const [token, setToken] = useState<string | null>(null);
-  const [employerId, setEmployerId] = useState("");
-  const [password, setPassword] = useState("");
-  const [loginBusy, setLoginBusy] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
-
   const monthOptions = useMemo(() => rollingMonthOptions(18), []);
 
   const [scope, setScope] = useState<"store" | "city">("store");
@@ -79,19 +71,12 @@ export function LeaderboardView() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    setToken(typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null);
-  }, []);
-
   const loadLeaderboard = useCallback(async () => {
-    if (!token) return;
     setLoading(true);
     setLoadError(null);
     try {
       const params = new URLSearchParams({ scope, month });
-      const res = await fetch(`/api/leaderboard?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(`/api/leaderboard?${params}`);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       setData(body);
@@ -101,90 +86,14 @@ export function LeaderboardView() {
     } finally {
       setLoading(false);
     }
-  }, [token, scope, month]);
+  }, [scope, month]);
 
   useEffect(() => {
-    if (token) void loadLeaderboard();
-  }, [token, scope, month, loadLeaderboard]);
+    void loadLeaderboard();
+  }, [scope, month, loadLeaderboard]);
 
   const setThisMonth = () => setMonth(format(startOfMonth(new Date()), "yyyy-MM"));
   const setLastMonth = () => setMonth(format(startOfMonth(subMonths(new Date(), 1)), "yyyy-MM"));
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginBusy(true);
-    setLoginError(null);
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employerId: employerId.trim(), password }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Login failed");
-      localStorage.setItem(TOKEN_KEY, body.token);
-      setToken(body.token);
-      setPassword("");
-    } catch (err) {
-      setLoginError(err instanceof Error ? err.message : "Login failed");
-    } finally {
-      setLoginBusy(false);
-    }
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-    setData(null);
-  };
-
-  if (!token) {
-    return (
-      <div className="max-w-md mx-auto rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center gap-2 text-slate-800 font-semibold mb-1">
-          <LogIn size={18} className="text-blue-600" />
-          Sign in to view leaderboard
-        </div>
-        <p className="text-sm text-slate-500 mb-4">
-          The leaderboard API requires a JWT (same as the mobile app). Employer ID equals employee ID from seed (e.g.{" "}
-          <code className="text-xs bg-slate-100 px-1 rounded">E001</code>
-          ). Password follows{" "}
-          <code className="text-xs bg-slate-100 px-1 rounded">Demo@{"{3-digit}"}{"{id length}"}</code>
-          — for <code className="text-xs bg-slate-100 px-1 rounded">E001</code> use{" "}
-          <code className="text-xs bg-slate-100 px-1 rounded">Demo@00104</code>.
-        </p>
-        <form onSubmit={handleLogin} className="space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Employer ID</label>
-            <input
-              value={employerId}
-              onChange={(e) => setEmployerId(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              autoComplete="username"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              autoComplete="current-password"
-            />
-          </div>
-          {loginError && <p className="text-sm text-red-600">{loginError}</p>}
-          <button
-            type="submit"
-            disabled={loginBusy}
-            className="w-full rounded-lg bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          >
-            {loginBusy ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -238,13 +147,6 @@ export function LeaderboardView() {
               <option key={m.value} value={m.value}>{m.label}</option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
-          >
-            <LogOut size={12} /> Sign out
-          </button>
         </div>
       </div>
 
