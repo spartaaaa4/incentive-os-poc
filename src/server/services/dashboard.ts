@@ -246,6 +246,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     ? await db.employeeMaster.findMany({ where: { employeeId: { in: performerIds } } })
     : [];
   const employeeById = new Map(performerEmployees.map((e) => [e.employeeId, e]));
+  const storeNameByCode = new Map(storeRows.map((s) => [s.storeCode, s.storeName]));
 
   const avgAchievement = storeAchievements.length > 0
     ? Math.round(storeAchievements.reduce((s, a) => s + a.achievementPct, 0) / storeAchievements.length)
@@ -291,6 +292,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
       employeeName: employeeById.get(item.employeeId)?.employeeName ?? item.employeeId,
       role: employeeById.get(item.employeeId)?.role ?? "SA",
       storeCode: item.storeCode,
+      storeName: storeNameByCode.get(item.storeCode) ?? item.storeCode,
       incentive: asNumber(item._sum.finalIncentive),
     })),
   };

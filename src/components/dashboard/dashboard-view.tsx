@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -26,7 +27,7 @@ import {
   Area, CartesianGrid, Line, ComposedChart,
 } from "recharts";
 import { Vertical } from "@/lib/constants";
-import { formatInr, formatNumber } from "@/lib/format";
+import { formatInr, formatNumber, formatInrScaleHint, pctDelta } from "@/lib/format";
 import { IncentiveDrilldown } from "@/components/dashboard/incentive-drilldown";
 import {
   TrendingUp, TrendingDown, IndianRupee, ShoppingCart,
@@ -72,6 +73,7 @@ type DashboardResponse = {
     employeeName: string;
     role: string;
     storeCode: string;
+    storeName: string;
     incentive: number;
   }>;
 };
@@ -95,7 +97,13 @@ const filterOptions: Array<{ label: string; value: "ALL" | Vertical }> = [
   { label: "F&L", value: Vertical.FNL },
 ];
 
-type Tab = "drilldown" | "overview";
+type Tab = "performers" | "drilldown";
+
+function prevMonthKey(yyyyMm: string): string {
+  const [y, m] = yyyyMm.split("-").map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
 
 function buildMonthOptions() {
   const now = new Date();
@@ -115,17 +123,28 @@ function currentMonth() {
 }
 
 const kpiTooltips: Record<string, string> = {
-  sales: "Total gross sales across all stores for the selected month and vertical.",
-  incentive: "Total incentive earned by all employees this month, after multiplier/slab application.",
-  upside: "Additional incentive that would be earned if every store reaches 100% achievement. This is money being left on the table.",
-  achievement: "Average achievement percentage across all stores. Company benchmark is 90%.",
-  plans: "Number of incentive plans currently in ACTIVE status for the selected vertical.",
+  sales: "Gross sales summed across all stores in scope for the calendar month you selected (offline normal transactions in this POC).",
+  incentive: "Total incentive credited to employees for this month after slabs and multipliers. This is actual payout, not accrual.",
+  upside: "Extra incentive that could still be earned if every store reached 100% of target (same scheme rules). It is the gap between potential and earned.",
+  achievement: "Simple average of each store’s achievement % (sales vs target) in scope. Internal benchmark 90% is shown as a guide, not a hard rule in this demo.",
+  plans: "Incentive plans in ACTIVE status for the selected vertical. Each vertical can run multiple schemes.",
 };
 
 function AchievementBadge({ pct }: { pct: number }) {
   const label = pct >= 100 ? "On track" : pct >= 90 ? "Near target" : pct >= 85 ? "Below target" : "Critical";
   const color = pct >= 100 ? "success" : pct >= 85 ? "warning" : "error";
   return <Tag color={color} style={{ marginInlineStart: 4, fontSize: 10 }}>{label}</Tag>;
+}
+
+function DeltaTag({ delta }: { delta: number | null }) {
+  if (delta === null) return null;
+  const up = delta >= 0;
+  return (
+    <Tag color={up ? "green" : "red"} style={{ marginTop: 4, fontSize: 11 }}>
+      {up ? <TrendingUp size={10} style={{ marginRight: 4 }} /> : <TrendingDown size={10} style={{ marginRight: 4 }} />}
+      vs prev. month: {up ? "+" : ""}{delta}%
+    </Tag>
+  );
 }
 
 function KpiCard({
@@ -138,6 +157,8 @@ function KpiCard({
   trend,
   badge,
   tooltipKey,
+  scaleHint,
+  deltaPct,
 }: {
   icon: React.ReactNode;
   iconBg: string;
@@ -148,6 +169,8 @@ function KpiCard({
   trend?: boolean;
   badge?: React.ReactNode;
   tooltipKey?: string;
+  scaleHint?: string | null;
+  deltaPct?: number | null;
 }) {
   return (
     <Card styles={{ body: { padding: 16 } }} style={{ height: "100%" }}>
@@ -159,7 +182,7 @@ function KpiCard({
           {label}
         </Typography.Text>
         {tooltipKey && (
-          <Popover content={<Typography.Text style={{ maxWidth: 280, fontSize: 12 }}>{kpiTooltips[tooltipKey]}</Typography.Text>} trigger="click">
+          <Popover content={<Typography.Text style={{ maxWidth: 300, fontSize: 12 }}>{kpiTooltips[tooltipKey]}</Typography.Text>} trigger="click">
             <Button type="text" size="small" icon={<Info size={13} />} style={{ color: "#94a3b8" }} aria-label="Metric info" />
           </Popover>
         )}
@@ -173,11 +196,17 @@ function KpiCard({
         )}
         {badge}
       </Flex>
+      {scaleHint ? (
+        <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 2 }}>
+          ≈ {scaleHint} (Indian numbering)
+        </Typography.Text>
+      ) : null}
       {subtitle && (
         <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 4 }}>
           {subtitle}
         </Typography.Text>
       )}
+      <DeltaTag delta={deltaPct ?? null} />
     </Card>
   );
 }
@@ -187,31 +216,73 @@ export function DashboardView() {
   const [selected, setSelected] = useState<"ALL" | Vertical>("ALL");
   const [month, setMonth] = useState(currentMonth);
   const [data, setData] = useState<DashboardResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<Tab>("drilldown");
+  const [prevStats, setPrevStats] = useState<{ totalSalesMtd: number; totalIncentiveMtd: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<Tab>("performers");
   const [overviewCollapsed, setOverviewCollapsed] = useState(false);
 
   const drilldownRef = useRef<{ drillToStore: (storeCode: string, storeName: string) => void } | null>(null);
+
+  const handleEnterCityStores = useCallback(() => {
+    setOverviewCollapsed(true);
+  }, []);
+
+  const handleReturnDrilldownRoot = useCallback(() => {
+    setOverviewCollapsed(false);
+  }, []);
+
+  useEffect(() => {
+    setOverviewCollapsed(false);
+  }, [selected, month]);
 
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams();
     if (selected !== "ALL") params.set("vertical", selected);
     params.set("month", month);
-    fetch(`/api/dashboard?${params.toString()}`)
-      .then((res) => {
+    const prevKey = prevMonthKey(month);
+    const prevParams = new URLSearchParams(params);
+    prevParams.set("month", prevKey);
+
+    const load = async () => {
+      try {
+        const [res, resPrev] = await Promise.all([
+          fetch(`/api/dashboard?${params.toString()}`),
+          fetch(`/api/dashboard?${prevParams.toString()}`),
+        ]);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((payload: DashboardResponse) => setData(payload))
-      .catch((err) => console.error("Dashboard fetch failed:", err))
-      .finally(() => setLoading(false));
+        const payload = (await res.json()) as DashboardResponse;
+        setData(payload);
+        if (resPrev.ok) {
+          const p = (await resPrev.json()) as DashboardResponse;
+          setPrevStats({ totalSalesMtd: p.stats.totalSalesMtd, totalIncentiveMtd: p.stats.totalIncentiveMtd });
+        } else {
+          setPrevStats(null);
+        }
+      } catch (err) {
+        console.error("Dashboard fetch failed:", err);
+        setData(null);
+        setPrevStats(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
   }, [selected, month]);
 
   const unlockable = useMemo(() => {
     if (!data) return 0;
     return data.stats.potentialIncentive - data.stats.totalIncentiveMtd;
   }, [data]);
+
+  const salesDelta = useMemo(
+    () => (data && prevStats ? pctDelta(data.stats.totalSalesMtd, prevStats.totalSalesMtd) : null),
+    [data, prevStats],
+  );
+  const incentiveDelta = useMemo(
+    () => (data && prevStats ? pctDelta(data.stats.totalIncentiveMtd, prevStats.totalIncentiveMtd) : null),
+    [data, prevStats],
+  );
 
   const handleBelowThresholdClick = (storeCode: string, storeName: string) => {
     setTab("drilldown");
@@ -234,7 +305,16 @@ export function DashboardView() {
     },
     { title: "Name", dataIndex: "employeeName" },
     { title: "Role", dataIndex: "role" },
-    { title: "Store", dataIndex: "storeCode" },
+    {
+      title: "Store",
+      key: "store",
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong style={{ fontSize: 13 }}>{row.storeName}</Typography.Text>
+          <Typography.Text type="secondary" code style={{ fontSize: 11 }}>{row.storeCode}</Typography.Text>
+        </Space>
+      ),
+    },
     {
       title: "Incentive",
       dataIndex: "incentive",
@@ -243,318 +323,358 @@ export function DashboardView() {
     },
   ];
 
-  if (loading && !data) {
+  if (!data && !loading) {
     return (
       <Flex align="center" justify="center" style={{ minHeight: 320 }}>
-        <Space direction="vertical" align="center">
-          <Spin size="large" />
-          <Typography.Text type="secondary">Loading dashboard…</Typography.Text>
-        </Space>
+        <Typography.Text type="danger">Could not load dashboard.</Typography.Text>
       </Flex>
     );
   }
 
   return (
-    <Space direction="vertical" size="large" style={{ width: "100%" }}>
-      <Flex wrap="wrap" align="center" justify="space-between" gap={16}>
-        <Segmented
-          options={filterOptions.map((o) => ({ label: o.label, value: o.value }))}
-          value={selected}
-          onChange={(v) => setSelected(v as "ALL" | Vertical)}
-        />
-        <Flex wrap="wrap" align="center" gap={12}>
-          <Space.Compact>
-            <Button
-              type="default"
-              icon={<ChevronLeft size={16} />}
-              disabled={month === monthOptions[0]?.value}
-              onClick={() => {
-                const idx = monthOptions.findIndex((m) => m.value === month);
-                if (idx > 0) setMonth(monthOptions[idx - 1].value);
-              }}
+    <Spin spinning={loading} tip={data ? "Refreshing…" : "Loading dashboard…"} size="large">
+      <Space direction="vertical" size="large" style={{ width: "100%", minHeight: 120 }}>
+          <Flex wrap="wrap" align="center" justify="space-between" gap={16}>
+            <Segmented
+              options={filterOptions.map((o) => ({ label: o.label, value: o.value }))}
+              value={selected}
+              onChange={(v) => setSelected(v as "ALL" | Vertical)}
             />
-            <Select
-              style={{ minWidth: 160 }}
-              value={month}
-              onChange={setMonth}
-              options={monthOptions.map((m) => ({ value: m.value, label: m.label }))}
-            />
-            <Button
-              type="default"
-              icon={<ChevronRight size={16} />}
-              disabled={month === monthOptions[monthOptions.length - 1]?.value}
-              onClick={() => {
-                const idx = monthOptions.findIndex((m) => m.value === month);
-                if (idx < monthOptions.length - 1) setMonth(monthOptions[idx + 1].value);
-              }}
-            />
-          </Space.Compact>
-          {data?.lastCalculatedAt && (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              <Clock size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-              Last updated:{" "}
-              {new Date(data.lastCalculatedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
-              , {new Date(data.lastCalculatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
-            </Typography.Text>
-          )}
-        </Flex>
-      </Flex>
+            <Flex wrap="wrap" align="center" gap={12}>
+              <Space.Compact>
+                <Button
+                  type="default"
+                  icon={<ChevronLeft size={16} />}
+                  disabled={month === monthOptions[0]?.value}
+                  onClick={() => {
+                    const idx = monthOptions.findIndex((m) => m.value === month);
+                    if (idx > 0) setMonth(monthOptions[idx - 1].value);
+                  }}
+                />
+                <Select
+                  style={{ minWidth: 160 }}
+                  value={month}
+                  onChange={setMonth}
+                  options={monthOptions.map((m) => ({ value: m.value, label: m.label }))}
+                />
+                <Button
+                  type="default"
+                  icon={<ChevronRight size={16} />}
+                  disabled={month === monthOptions[monthOptions.length - 1]?.value}
+                  onClick={() => {
+                    const idx = monthOptions.findIndex((m) => m.value === month);
+                    if (idx < monthOptions.length - 1) setMonth(monthOptions[idx + 1].value);
+                  }}
+                />
+              </Space.Compact>
+              {data?.lastCalculatedAt && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  <Clock size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                  Last updated:{" "}
+                  {new Date(data.lastCalculatedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                  , {new Date(data.lastCalculatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                  {loading && data ? " · refreshing…" : ""}
+                </Typography.Text>
+              )}
+            </Flex>
+          </Flex>
 
-      {data && (
-        <>
-          {overviewCollapsed ? (
-            <Button block type="default" onClick={() => setOverviewCollapsed(false)} style={{ textAlign: "left", height: "auto", paddingBlock: 12 }}>
-              <Flex justify="space-between" align="center" gap={8}>
-                <span>
-                  {data.monthLabel} · {formatInr(data.stats.totalSalesMtd)} Sales · {formatInr(data.stats.totalIncentiveMtd)} Earned · {data.stats.avgAchievementPct}% Avg Achievement
-                </span>
-                <ChevronDown size={16} />
-              </Flex>
-            </Button>
-          ) : (
-            <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-              <Row gutter={[12, 12]}>
-                <Col xs={24} sm={12} lg={8} xl={5}>
-                  <KpiCard
-                    icon={<ShoppingCart size={18} />}
-                    iconBg="bg-blue-100 text-blue-600"
-                    label="Total Sales MTD"
-                    value={formatInr(data.stats.totalSalesMtd)}
-                    subtitle={`Target: ${formatInr(data.stats.totalTarget)}`}
-                    tooltipKey="sales"
-                  />
-                </Col>
-                <Col xs={24} sm={12} lg={8} xl={5}>
-                  <KpiCard
-                    icon={<IndianRupee size={18} />}
-                    iconBg="bg-emerald-100 text-emerald-600"
-                    label="Incentives Earned"
-                    value={formatInr(data.stats.totalIncentiveMtd)}
-                    subtitle={`of ${formatInr(data.stats.potentialIncentive)} potential`}
-                    valueStyle={{ color: "#047857" }}
-                    tooltipKey="incentive"
-                  />
-                </Col>
-                <Col xs={24} sm={12} lg={8} xl={5}>
-                  <KpiCard
-                    icon={<Award size={18} />}
-                    iconBg="bg-amber-100 text-amber-600"
-                    label="Incentive Upside"
-                    value={formatInr(unlockable)}
-                    subtitle="gap to full payout"
-                    valueStyle={{ color: "#b45309" }}
-                    tooltipKey="upside"
-                  />
-                </Col>
-                <Col xs={24} sm={12} lg={8} xl={5}>
-                  <KpiCard
-                    icon={<Target size={18} />}
-                    iconBg="bg-indigo-100 text-indigo-600"
-                    label="Avg Achievement"
-                    value={`${data.stats.avgAchievementPct}%`}
-                    trend={data.stats.avgAchievementPct >= 100}
-                    badge={<AchievementBadge pct={data.stats.avgAchievementPct} />}
-                    tooltipKey="achievement"
-                  />
-                </Col>
-                <Col xs={24} sm={12} lg={8} xl={4}>
-                  <KpiCard
-                    icon={<Store size={18} />}
-                    iconBg="bg-slate-100 text-slate-600"
-                    label="Active Incentive Plans"
-                    value={formatNumber(data.stats.activeSchemes)}
-                    subtitle={`${formatNumber(data.stats.stores)} stores, ${formatNumber(data.stats.totalEmployees)} associates`}
-                    tooltipKey="plans"
-                  />
-                </Col>
-              </Row>
+          {data && (
+            <>
+              {overviewCollapsed ? (
+                <Button block type="default" onClick={() => setOverviewCollapsed(false)} style={{ textAlign: "left", height: "auto", paddingBlock: 12 }}>
+                  <Flex vertical gap={6} style={{ width: "100%" }}>
+                    <Flex justify="space-between" align="center" gap={8}>
+                      <Typography.Text strong>{data.monthLabel}</Typography.Text>
+                      <ChevronDown size={16} />
+                    </Flex>
+                    <Flex wrap="wrap" gap="small">
+                      <Tag>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>Sales </Typography.Text>
+                        <Typography.Text strong>{formatInr(data.stats.totalSalesMtd)}</Typography.Text>
+                      </Tag>
+                      <Tag>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>Incentive </Typography.Text>
+                        <Typography.Text strong style={{ color: "#047857" }}>{formatInr(data.stats.totalIncentiveMtd)}</Typography.Text>
+                      </Tag>
+                      <Tag>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>Avg achievement </Typography.Text>
+                        <Typography.Text strong>{data.stats.avgAchievementPct}%</Typography.Text>
+                      </Tag>
+                      <Tag>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>Stores </Typography.Text>
+                        <Typography.Text strong>{formatNumber(data.stats.stores)}</Typography.Text>
+                      </Tag>
+                    </Flex>
+                  </Flex>
+                </Button>
+              ) : (
+                <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                  <Row gutter={[12, 12]}>
+                    <Col xs={24} sm={12} lg={8} xl={5}>
+                      <KpiCard
+                        icon={<ShoppingCart size={18} />}
+                        iconBg="bg-blue-100 text-blue-600"
+                        label="Sales (this month)"
+                        value={formatInr(data.stats.totalSalesMtd)}
+                        subtitle={`Target for month: ${formatInr(data.stats.totalTarget)} · MTD = month-to-date`}
+                        scaleHint={formatInrScaleHint(data.stats.totalSalesMtd)}
+                        tooltipKey="sales"
+                        deltaPct={salesDelta}
+                      />
+                    </Col>
+                    <Col xs={24} sm={12} lg={8} xl={5}>
+                      <KpiCard
+                        icon={<IndianRupee size={18} />}
+                        iconBg="bg-emerald-100 text-emerald-600"
+                        label="Incentives paid (earned)"
+                        value={formatInr(data.stats.totalIncentiveMtd)}
+                        subtitle={`of ${formatInr(data.stats.potentialIncentive)} if all stores hit 100% of target`}
+                        valueStyle={{ color: "#047857" }}
+                        scaleHint={formatInrScaleHint(data.stats.totalIncentiveMtd)}
+                        tooltipKey="incentive"
+                        deltaPct={incentiveDelta}
+                      />
+                    </Col>
+                    <Col xs={24} sm={12} lg={8} xl={5}>
+                      <KpiCard
+                        icon={<Award size={18} />}
+                        iconBg="bg-amber-100 text-amber-600"
+                        label="Remaining incentive upside"
+                        value={formatInr(unlockable)}
+                        subtitle="Extra payout still available at full target achievement"
+                        valueStyle={{ color: "#b45309" }}
+                        scaleHint={formatInrScaleHint(unlockable)}
+                        tooltipKey="upside"
+                      />
+                    </Col>
+                    <Col xs={24} sm={12} lg={8} xl={5}>
+                      <KpiCard
+                        icon={<Target size={18} />}
+                        iconBg="bg-indigo-100 text-indigo-600"
+                        label="Average store achievement"
+                        value={`${data.stats.avgAchievementPct}%`}
+                        trend={data.stats.avgAchievementPct >= 100}
+                        badge={<AchievementBadge pct={data.stats.avgAchievementPct} />}
+                        subtitle="Mean of each store’s sales vs target % in scope"
+                        tooltipKey="achievement"
+                      />
+                    </Col>
+                    <Col xs={24} sm={12} lg={8} xl={4}>
+                      <KpiCard
+                        icon={<Store size={18} />}
+                        iconBg="bg-slate-100 text-slate-600"
+                        label="Active incentive plans"
+                        value={formatNumber(data.stats.activeSchemes)}
+                        subtitle={`${formatNumber(data.stats.stores)} stores · ${formatNumber(data.stats.totalEmployees)} associates`}
+                        tooltipKey="plans"
+                      />
+                    </Col>
+                  </Row>
 
-              <Card size="small">
-                <Flex align="center" gap={12} wrap="wrap">
-                  <Users size={14} style={{ color: "#94a3b8" }} />
-                  <Typography.Text>
-                    <Typography.Text strong style={{ color: "#047857" }}>{formatNumber(data.stats.employeesEarning)}</Typography.Text>
-                    {" "}of{" "}
-                    <Typography.Text strong>{formatNumber(data.stats.totalEmployees)}</Typography.Text>
-                    {" "}associates earning incentives this month
-                  </Typography.Text>
-                  <div style={{ flex: 1, minWidth: 120 }}>
-                    <Progress
-                      percent={data.stats.totalEmployees > 0 ? Math.round((data.stats.employeesEarning / data.stats.totalEmployees) * 100) : 0}
-                      strokeColor="#10b981"
-                      showInfo
-                    />
-                  </div>
-                </Flex>
-              </Card>
+                  <Card size="small">
+                    <Flex align="center" gap={12} wrap="wrap">
+                      <Users size={14} style={{ color: "#94a3b8" }} />
+                      <Typography.Text>
+                        <Typography.Text strong style={{ color: "#047857" }}>{formatNumber(data.stats.employeesEarning)}</Typography.Text>
+                        {" "}of{" "}
+                        <Typography.Text strong>{formatNumber(data.stats.totalEmployees)}</Typography.Text>
+                        {" "}associates earning incentives this month
+                      </Typography.Text>
+                      <div style={{ flex: 1, minWidth: 120 }}>
+                        <Progress
+                          percent={data.stats.totalEmployees > 0 ? Math.round((data.stats.employeesEarning / data.stats.totalEmployees) * 100) : 0}
+                          strokeColor="#10b981"
+                          showInfo
+                        />
+                      </div>
+                    </Flex>
+                  </Card>
 
-              {(data.alerts.pendingApprovals > 0 || data.alerts.belowThresholdStores > 0) && (
-                <Space direction="vertical" size="small" style={{ width: "100%" }}>
-                  {data.alerts.pendingApprovals > 0 && (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      icon={<AlertTriangle size={16} />}
-                      message={`${data.alerts.pendingApprovals} pending approval${data.alerts.pendingApprovals > 1 ? "s" : ""}`}
-                    />
+                  {(data.alerts.pendingApprovals > 0 || data.alerts.belowThresholdStores > 0) && (
+                    <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                      {data.alerts.pendingApprovals > 0 && (
+                        <Alert
+                          type="warning"
+                          showIcon
+                          icon={<AlertTriangle size={16} />}
+                          message={`${data.alerts.pendingApprovals} pending approval${data.alerts.pendingApprovals > 1 ? "s" : ""}`}
+                          description={
+                            <Link href="/approvals" style={{ marginTop: 8, display: "inline-block" }}>
+                              Open approvals queue →
+                            </Link>
+                          }
+                        />
+                      )}
+                      {data.alerts.belowThresholdStores > 0 && (
+                        <Alert
+                          type="error"
+                          showIcon
+                          icon={<AlertTriangle size={16} />}
+                          message={`${data.alerts.belowThresholdStores} store${data.alerts.belowThresholdStores > 1 ? "s" : ""} below minimum achievement for incentive`}
+                          description={
+                            <Space direction="vertical" size="small" style={{ width: "100%", marginTop: 4 }}>
+                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                These stores have sales but no credited incentive yet (often below scheme gate). Click a store to open its breakdown.
+                              </Typography.Text>
+                              {data.alerts.belowThresholdList.length > 0 ? (
+                                <Space wrap size={[8, 8]}>
+                                  {data.alerts.belowThresholdList.map((s) => (
+                                    <Button
+                                      key={s.storeCode}
+                                      size="small"
+                                      type="default"
+                                      danger
+                                      onClick={() => handleBelowThresholdClick(s.storeCode, s.storeName)}
+                                    >
+                                      {s.storeName} ({s.achievementPct}%) <ChevronRight size={10} style={{ display: "inline" }} />
+                                    </Button>
+                                  ))}
+                                </Space>
+                              ) : null}
+                            </Space>
+                          }
+                        />
+                      )}
+                    </Space>
                   )}
-                  {data.alerts.belowThresholdStores > 0 && (
-                    <Alert
-                      type="error"
-                      showIcon
-                      icon={<AlertTriangle size={16} />}
-                      message={`${data.alerts.belowThresholdStores} store${data.alerts.belowThresholdStores > 1 ? "s" : ""} below gate threshold`}
-                      description={
-                        data.alerts.belowThresholdList.length > 0 ? (
-                          <Space wrap size={[8, 8]} style={{ marginTop: 8 }}>
-                            {data.alerts.belowThresholdList.map((s) => (
-                              <Button
-                                key={s.storeCode}
-                                size="small"
-                                type="default"
-                                danger
-                                onClick={() => handleBelowThresholdClick(s.storeCode, s.storeName)}
-                              >
-                                {s.storeName} ({s.achievementPct}%) <ChevronRight size={10} style={{ display: "inline" }} />
-                              </Button>
-                            ))}
-                          </Space>
-                        ) : null
-                      }
-                    />
+
+                  <Row gutter={[16, 16]}>
+                    <Col xs={24} lg={12}>
+                      <Card title="Stores by achievement band" size="small" styles={{ header: { minHeight: 48 } }}>
+                        <Typography.Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 12, fontSize: 12 }}>
+                          Count of stores in each sales-vs-target band for the selected month
+                        </Typography.Paragraph>
+                        <ResponsiveContainer width="100%" height={220}>
+                          <BarChart data={data.achievementDistribution} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
+                            <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
+                            <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                            <Tooltip
+                              contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}
+                              formatter={(value) => [String(value), "Stores"]}
+                            />
+                            <Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Card>
+                    </Col>
+                    <Col xs={24} lg={12}>
+                      <Card title="Daily sales vs target pace" size="small" styles={{ header: { minHeight: 48 } }}>
+                        <Typography.Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 12, fontSize: 12 }}>
+                          Cumulative sales (area) compared with linear target pace (dashed line). Hover for exact rupee values.
+                        </Typography.Paragraph>
+                        <ResponsiveContainer width="100%" height={220}>
+                          <ComposedChart data={data.dailySalesTrend} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
+                            <defs>
+                              <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                            <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} />
+                            <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => (v >= 100000 ? `${(v / 100000).toFixed(1)}L` : `${(v / 1000).toFixed(0)}K`)} />
+                            <Tooltip
+                              contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}
+                              formatter={(value, name) => [formatInr(Number(value)), name === "sales" ? "Actual sales" : "Target pace (cumulative)"]}
+                              labelFormatter={(label) => String(label)}
+                            />
+                            <Area type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2} fill="url(#salesGrad)" />
+                            <Line type="monotone" dataKey="targetPace" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="6 3" dot={false} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </Card>
+                    </Col>
+                  </Row>
+
+                  {selected === "ALL" && data.verticalBreakdown.length > 0 && (
+                    <Row gutter={[12, 12]}>
+                      {data.verticalBreakdown.map((v) => (
+                        <Col xs={24} md={8} key={v.vertical}>
+                          <Card
+                            hoverable
+                            onClick={() => setSelected(v.vertical as Vertical)}
+                            styles={{ body: { padding: 16 } }}
+                          >
+                            <Flex justify="space-between" align="center" style={{ marginBottom: 12 }}>
+                              <Space>
+                                <span style={{ width: 10, height: 10, borderRadius: 999, background: verticalDotColor[v.vertical] ?? "#94a3b8", display: "inline-block" }} />
+                                <Typography.Text strong>{verticalLabels[v.vertical] ?? v.vertical}</Typography.Text>
+                              </Space>
+                              <ChevronRight size={14} style={{ color: "#cbd5e1" }} />
+                            </Flex>
+                            <Row gutter={[8, 8]}>
+                              <Col span={12}>
+                                <Typography.Text type="secondary" style={{ fontSize: 11 }}>Sales</Typography.Text>
+                                <div><Typography.Text strong>{formatInr(v.salesMtd)}</Typography.Text></div>
+                              </Col>
+                              <Col span={12}>
+                                <Typography.Text type="secondary" style={{ fontSize: 11 }}>Incentive earned</Typography.Text>
+                                <div><Typography.Text strong style={{ color: "#047857" }}>{formatInr(v.incentiveEarned)}</Typography.Text></div>
+                              </Col>
+                              <Col span={12}>
+                                <Typography.Text type="secondary" style={{ fontSize: 11 }}>Avg achievement</Typography.Text>
+                                <div>
+                                  <Typography.Text>{v.avgAchievementPct}%</Typography.Text>
+                                  <AchievementBadge pct={v.avgAchievementPct} />
+                                </div>
+                              </Col>
+                              <Col span={12}>
+                                <Typography.Text type="secondary" style={{ fontSize: 11 }}>Stores / associates</Typography.Text>
+                                <div><Typography.Text>{v.stores} / {v.employees}</Typography.Text></div>
+                              </Col>
+                            </Row>
+                          </Card>
+                        </Col>
+                      ))}
+                    </Row>
                   )}
+
+                  <Flex justify="center">
+                    <Button type="link" size="small" onClick={() => setOverviewCollapsed(true)} icon={<ChevronUp size={14} />}>
+                      Collapse overview
+                    </Button>
+                  </Flex>
                 </Space>
               )}
 
-              <Row gutter={[16, 16]}>
-                <Col xs={24} lg={12}>
-                  <Card title="Store Achievement Distribution" size="small" styles={{ header: { minHeight: 48 } }}>
-                    <Typography.Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 12, fontSize: 12 }}>
-                      Number of stores per achievement band
-                    </Typography.Paragraph>
-                    <ResponsiveContainer width="100%" height={220}>
-                      <BarChart data={data.achievementDistribution} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
-                        <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                        <Tooltip
-                          contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}
-                          formatter={(value) => [String(value), "Stores"]}
+              <Tabs
+                activeKey={tab}
+                onChange={(k) => setTab(k as Tab)}
+                items={[
+                  {
+                    key: "performers",
+                    label: "Top performers",
+                    children: (
+                      <Card title="Top 10 by incentive (this month)" size="small" styles={{ body: { paddingTop: 12 } }}>
+                        <Table<DashboardResponse["topPerformers"][number]>
+                          rowKey={(r) => `${r.rank}-${r.employeeName}`}
+                          columns={performerColumns}
+                          dataSource={data.topPerformers ?? []}
+                          pagination={false}
+                          size="small"
                         />
-                        <Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </Card>
-                </Col>
-                <Col xs={24} lg={12}>
-                  <Card title="Daily Sales Trend" size="small" styles={{ header: { minHeight: 48 } }}>
-                    <Typography.Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 12, fontSize: 12 }}>
-                      Actual sales vs target pace
-                    </Typography.Paragraph>
-                    <ResponsiveContainer width="100%" height={220}>
-                      <ComposedChart data={data.dailySalesTrend} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
-                        <defs>
-                          <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} />
-                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => (v >= 100000 ? `${(v / 100000).toFixed(1)}L` : `${(v / 1000).toFixed(0)}K`)} />
-                        <Tooltip
-                          contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}
-                          formatter={(value, name) => [formatInr(Number(value)), name === "sales" ? "Actual Sales" : "Target Pace"]}
-                          labelFormatter={(label) => String(label)}
-                        />
-                        <Area type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2} fill="url(#salesGrad)" />
-                        <Line type="monotone" dataKey="targetPace" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="6 3" dot={false} />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </Card>
-                </Col>
-              </Row>
-
-              {selected === "ALL" && data.verticalBreakdown.length > 0 && (
-                <Row gutter={[12, 12]}>
-                  {data.verticalBreakdown.map((v) => (
-                    <Col xs={24} md={8} key={v.vertical}>
-                      <Card
-                        hoverable
-                        onClick={() => setSelected(v.vertical as Vertical)}
-                        styles={{ body: { padding: 16 } }}
-                      >
-                        <Flex justify="space-between" align="center" style={{ marginBottom: 12 }}>
-                          <Space>
-                            <span style={{ width: 10, height: 10, borderRadius: 999, background: verticalDotColor[v.vertical] ?? "#94a3b8", display: "inline-block" }} />
-                            <Typography.Text strong>{verticalLabels[v.vertical] ?? v.vertical}</Typography.Text>
-                          </Space>
-                          <ChevronRight size={14} style={{ color: "#cbd5e1" }} />
-                        </Flex>
-                        <Row gutter={[8, 8]}>
-                          <Col span={12}>
-                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>Sales</Typography.Text>
-                            <div><Typography.Text strong>{formatInr(v.salesMtd)}</Typography.Text></div>
-                          </Col>
-                          <Col span={12}>
-                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>Incentive Earned</Typography.Text>
-                            <div><Typography.Text strong style={{ color: "#047857" }}>{formatInr(v.incentiveEarned)}</Typography.Text></div>
-                          </Col>
-                          <Col span={12}>
-                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>Avg Achievement</Typography.Text>
-                            <div>
-                              <Typography.Text>{v.avgAchievementPct}%</Typography.Text>
-                              <AchievementBadge pct={v.avgAchievementPct} />
-                            </div>
-                          </Col>
-                          <Col span={12}>
-                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>Stores / Associates</Typography.Text>
-                            <div><Typography.Text>{v.stores} / {v.employees}</Typography.Text></div>
-                          </Col>
-                        </Row>
                       </Card>
-                    </Col>
-                  ))}
-                </Row>
-              )}
-
-              <Flex justify="center">
-                <Button type="link" size="small" onClick={() => setOverviewCollapsed(true)} icon={<ChevronUp size={14} />}>
-                  Collapse overview
-                </Button>
-              </Flex>
-            </Space>
+                    ),
+                  },
+                  {
+                    key: "drilldown",
+                    label: "Stores & people (detail)",
+                    children: (
+                      <IncentiveDrilldown
+                        ref={drilldownRef}
+                        vertical={selected === "ALL" ? "" : selected}
+                        month={month}
+                        onEnterCityStores={handleEnterCityStores}
+                        onReturnToDrilldownRoot={handleReturnDrilldownRoot}
+                      />
+                    ),
+                  },
+                ]}
+              />
+            </>
           )}
-
-          <Tabs
-            activeKey={tab}
-            onChange={(k) => setTab(k as Tab)}
-            items={[
-              {
-                key: "drilldown",
-                label: "Store & Employee Breakdown",
-                children: (
-                  <IncentiveDrilldown ref={drilldownRef} vertical={selected === "ALL" ? "" : selected} month={month} />
-                ),
-              },
-              {
-                key: "overview",
-                label: "Top Performers",
-                children: (
-                  <Card title="Top 10 Performers" size="small" styles={{ body: { paddingTop: 12 } }}>
-                    <Table<DashboardResponse["topPerformers"][number]>
-                      rowKey={(r) => `${r.rank}-${r.employeeName}`}
-                      columns={performerColumns}
-                      dataSource={data.topPerformers ?? []}
-                      pagination={false}
-                      size="small"
-                    />
-                  </Card>
-                ),
-              },
-            ]}
-          />
-        </>
-      )}
-    </Space>
+      </Space>
+    </Spin>
   );
 }

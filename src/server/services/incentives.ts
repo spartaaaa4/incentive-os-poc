@@ -284,8 +284,13 @@ async function getStoreDetail(params: Params) {
   return {
     level: "storeDetail" as const,
     summary: {
-      storeCode: store.storeCode, storeName: store.storeName, vertical: store.vertical,
-      totalIncentive, employeeCount: employees.length, totalEmployees: store.employees.length,
+      storeCode: store.storeCode,
+      storeName: store.storeName,
+      vertical: store.vertical,
+      city: store.city,
+      totalIncentive,
+      employeeCount: employees.length,
+      totalEmployees: store.employees.length,
     },
     departments,
     employees,

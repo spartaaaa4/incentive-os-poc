@@ -1,15 +1,34 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from "react";
-import { ChevronRight, Loader2, ArrowLeft, TrendingUp, Users, MapPin, Store, Briefcase, User, ShoppingBag, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useState, type ReactNode } from "react";
+import {
+  Breadcrumb,
+  Button,
+  Card,
+  Col,
+  Flex,
+  Progress,
+  Row,
+  Space,
+  Spin,
+  Table,
+  Typography,
+} from "antd";
+import type { ColumnsType } from "antd/es/table";
+import { ChevronRight, ArrowLeft, TrendingUp, Users, MapPin, Store, Briefcase, User, ShoppingBag } from "lucide-react";
 import { formatInr, formatNumber } from "@/lib/format";
 
 type Breadcrumb = { label: string; params: Record<string, string> };
 
 export const IncentiveDrilldown = forwardRef<
   { drillToStore: (storeCode: string, storeName: string) => void },
-  { vertical: string; month?: string }
->(function IncentiveDrilldown({ vertical, month }, ref) {
+  {
+    vertical: string;
+    month?: string;
+    onEnterCityStores?: () => void;
+    onReturnToDrilldownRoot?: () => void;
+  }
+>(function IncentiveDrilldown({ vertical, month, onEnterCityStores, onReturnToDrilldownRoot }, ref) {
   const [params, setParams] = useState<Record<string, string>>({});
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -39,18 +58,26 @@ export const IncentiveDrilldown = forwardRef<
   useEffect(() => {
     setCrumbs([{ label: "All Cities", params: {} }]);
     setParams({});
-  }, [vertical]);
+    onReturnToDrilldownRoot?.();
+  }, [vertical, month, onReturnToDrilldownRoot]);
 
   const drillTo = (label: string, newParams: Record<string, string>) => {
     setCrumbs((prev) => [...prev, { label, params: newParams }]);
     setParams(newParams);
+    if (newParams.city && !newParams.storeCode && !newParams.employeeId) {
+      onEnterCityStores?.();
+    }
   };
 
   const goBack = () => {
     setCrumbs((prev) => {
       if (prev.length <= 1) return prev;
       const next = prev.slice(0, -1);
-      setParams(next[next.length - 1].params);
+      const rootParams = next[next.length - 1].params;
+      setParams(rootParams);
+      if (next.length === 1 && Object.keys(rootParams).length === 0) {
+        queueMicrotask(() => onReturnToDrilldownRoot?.());
+      }
       return next;
     });
   };
@@ -58,7 +85,11 @@ export const IncentiveDrilldown = forwardRef<
   const goTo = (idx: number) => {
     setCrumbs((prev) => {
       const next = prev.slice(0, idx + 1);
-      setParams(next[next.length - 1].params);
+      const p = next[next.length - 1].params;
+      setParams(p);
+      if (next.length === 1 && Object.keys(p).length === 0) {
+        queueMicrotask(() => onReturnToDrilldownRoot?.());
+      }
       return next;
     });
   };
@@ -74,93 +105,57 @@ export const IncentiveDrilldown = forwardRef<
 
   const level = (data as { level?: string })?.level;
 
+  const breadcrumbItems = crumbs.map((c, i) => {
+    const last = i === crumbs.length - 1;
+    return {
+      key: String(i),
+      title: last ? (
+        <Typography.Text strong>{c.label}</Typography.Text>
+      ) : (
+        <Typography.Link onClick={() => goTo(i)}>{c.label}</Typography.Link>
+      ),
+    };
+  });
+
   return (
-    <div className="space-y-4">
-      {/* Breadcrumbs */}
-      <div className="flex items-center gap-1 text-sm text-slate-500 flex-wrap">
-        {crumbs.length > 1 && (
-          <button onClick={goBack} className="mr-1 p-1 rounded hover:bg-slate-200 text-slate-400"><ArrowLeft size={14} /></button>
-        )}
-        {crumbs.map((c, i) => (
-          <span key={i} className="flex items-center gap-1">
-            {i > 0 && <ChevronRight size={12} className="text-slate-300" />}
-            <button
-              onClick={() => goTo(i)}
-              className={`hover:text-blue-600 transition-colors ${i === crumbs.length - 1 ? "text-slate-900 font-medium" : "text-slate-500"}`}
-            >
-              {c.label}
-            </button>
-          </span>
-        ))}
-      </div>
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Flex align="center" gap={8} wrap="wrap">
+        {crumbs.length > 1 ? (
+          <Button type="text" size="small" icon={<ArrowLeft size={14} />} onClick={goBack} aria-label="Back" />
+        ) : null}
+        <Breadcrumb items={breadcrumbItems} separator={<ChevronRight size={12} />} />
+      </Flex>
 
-      {loading && <div className="flex items-center gap-2 py-12 justify-center text-sm text-slate-500"><Loader2 size={16} className="animate-spin" /> Loading...</div>}
-
-      {!loading && data && level === "city" && <CityView data={data} onDrill={drillTo} />}
-      {!loading && data && level === "store" && <StoreView data={data} onDrill={drillTo} />}
-      {!loading && data && level === "storeDetail" && <StoreDetailView data={data} onDrill={drillTo} />}
-      {!loading && data && level === "employeeDetail" && <EmployeeDetailView data={data} />}
-    </div>
+      <Spin spinning={loading} tip="Loading…">
+        <div style={{ minHeight: 80 }}>
+          {!loading && data && level === "city" && <CityView data={data} onDrill={drillTo} />}
+          {!loading && data && level === "store" && <StoreView data={data} onDrill={drillTo} />}
+          {!loading && data && level === "storeDetail" && <StoreDetailView data={data} onDrill={drillTo} />}
+          {!loading && data && level === "employeeDetail" && <EmployeeDetailView data={data} />}
+        </div>
+      </Spin>
+    </Space>
   );
 });
 
-// ── Stat card helper ──
-function Stat({ icon, label, value, accent }: { icon: React.ReactNode; label: string; value: string; accent?: string }) {
+function StatCard({ icon, label, value, valueColor }: { icon: ReactNode; label: string; value: string; valueColor?: string }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3 flex items-center gap-3">
-      <div className="rounded-md bg-slate-100 p-2 text-slate-500">{icon}</div>
-      <div><p className="text-xs text-slate-500">{label}</p><p className={`text-lg font-semibold ${accent ?? "text-slate-900"}`}>{value}</p></div>
-    </div>
+    <Card size="small" styles={{ body: { padding: 12 } }}>
+      <Flex align="center" gap={12}>
+        <div style={{ borderRadius: 8, padding: 8, background: "#f1f5f9", color: "#64748b" }}>{icon}</div>
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 11, display: "block" }}>{label}</Typography.Text>
+          <Typography.Text strong style={{ fontSize: 16, color: valueColor }}>{value}</Typography.Text>
+        </div>
+      </Flex>
+    </Card>
   );
 }
 
 function AchievementBar({ pct }: { pct: number }) {
-  const clamp = Math.min(pct, 150);
-  const color = pct >= 100 ? "bg-emerald-500" : pct >= 85 ? "bg-amber-500" : "bg-red-500";
-  return (
-    <div className="w-full bg-slate-100 rounded-full h-2 relative">
-      <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${Math.min(100, (clamp / 150) * 100)}%` }} />
-      <div className="absolute top-0 left-[66.7%] w-px h-2 bg-slate-300" title="100%" />
-    </div>
-  );
-}
-
-// ── Sortable column header ──
-type SortDir = "asc" | "desc" | null;
-function SortHeader({ label, active, dir, onClick, className }: { label: string; active: boolean; dir: SortDir; onClick: () => void; className?: string }) {
-  return (
-    <th className={`p-3 cursor-pointer select-none hover:bg-slate-100 transition-colors ${className ?? ""}`} onClick={onClick}>
-      <div className="flex items-center gap-1">
-        <span>{label}</span>
-        {active ? (dir === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />) : <ArrowUpDown size={12} className="text-slate-300" />}
-      </div>
-    </th>
-  );
-}
-
-function useSortable<T>(rows: T[], defaultKey?: keyof T, defaultDir: SortDir = "desc") {
-  const [sortKey, setSortKey] = useState<keyof T | null>(defaultKey ?? null);
-  const [sortDir, setSortDir] = useState<SortDir>(defaultDir);
-
-  const toggle = (key: keyof T) => {
-    if (sortKey === key) {
-      setSortDir((prev) => (prev === "desc" ? "asc" : prev === "asc" ? null : "desc"));
-      if (sortDir === "asc") setSortKey(null);
-    } else {
-      setSortKey(key);
-      setSortDir("desc");
-    }
-  };
-
-  const sorted = sortKey && sortDir
-    ? [...rows].sort((a, b) => {
-        const av = a[sortKey], bv = b[sortKey];
-        const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
-        return sortDir === "asc" ? cmp : -cmp;
-      })
-    : rows;
-
-  return { sorted, sortKey, sortDir, toggle };
+  const p = Math.min(150, Math.max(0, pct));
+  const stroke = pct >= 100 ? "#10b981" : pct >= 85 ? "#f59e0b" : "#ef4444";
+  return <Progress percent={Math.round((p / 150) * 100)} showInfo={false} strokeColor={stroke} trailColor="#f1f5f9" size="small" style={{ marginBottom: 0 }} />;
 }
 
 // ── Level 1: Cities ──
@@ -168,39 +163,40 @@ function CityView({ data, onDrill }: { data: Record<string, unknown>; onDrill: (
   const summary = data.summary as { totalIncentive: number; totalEmployees: number; employeesEarning: number; totalSales: number; storeCount: number };
   const rows = data.rows as Array<{ city: string; state: string; storeCount: number; employeeCount: number; totalEmployees: number; totalSales: number; totalIncentive: number; avgAchievementPct: number }>;
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat icon={<ShoppingBag size={16} />} label="Total Sales (MTD)" value={formatInr(summary.totalSales)} />
-        <Stat icon={<TrendingUp size={16} />} label="Total Incentive (MTD)" value={formatInr(summary.totalIncentive)} />
-        <Stat icon={<Users size={16} />} label="Associates Earning" value={`${formatNumber(summary.employeesEarning)} of ${formatNumber(summary.totalEmployees)}`} />
-        <Stat icon={<Store size={16} />} label="Stores" value={formatNumber(summary.storeCount)} />
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Row gutter={[12, 12]}>
+        <Col xs={12} lg={6}><StatCard icon={<ShoppingBag size={16} />} label="Sales (this month)" value={formatInr(summary.totalSales)} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Incentives (this month)" value={formatInr(summary.totalIncentive)} valueColor="#047857" /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<Users size={16} />} label="Associates earning" value={`${formatNumber(summary.employeesEarning)} / ${formatNumber(summary.totalEmployees)}`} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<Store size={16} />} label="Stores" value={formatNumber(summary.storeCount)} /></Col>
+      </Row>
+      <Row gutter={[12, 12]}>
         {rows.map((r) => (
-          <button key={r.city} onClick={() => onDrill(r.city, { city: r.city })}
-            className="text-left rounded-xl border border-slate-200 bg-white p-4 hover:border-blue-300 hover:shadow-sm transition-all">
-            <div className="flex items-start justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <MapPin size={14} className="text-slate-400" />
-                <span className="font-medium text-slate-900">{r.city}</span>
-                <span className="text-xs text-slate-400">{r.state}</span>
-              </div>
-              <ChevronRight size={14} className="text-slate-300" />
-            </div>
-            <div className="space-y-2">
+          <Col xs={24} md={12} lg={8} key={r.city}>
+            <Card hoverable onClick={() => onDrill(r.city, { city: r.city })} styles={{ body: { padding: 16 } }}>
+              <Flex justify="space-between" align="flex-start" style={{ marginBottom: 8 }}>
+                <Space>
+                  <MapPin size={14} style={{ color: "#94a3b8" }} />
+                  <Typography.Text strong>{r.city}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.state}</Typography.Text>
+                </Space>
+                <ChevronRight size={14} style={{ color: "#cbd5e1" }} />
+              </Flex>
               <AchievementBar pct={r.avgAchievementPct} />
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <div className="flex justify-between"><span className="text-slate-400">Sales MTD</span><span className="font-medium text-slate-700">{formatInr(r.totalSales)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Incentive</span><span className="font-medium text-emerald-700">{formatInr(r.totalIncentive)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Stores</span><span className="font-medium text-slate-700">{r.storeCount}</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">Earning</span><span className="font-medium text-slate-700">{r.employeeCount} of {r.totalEmployees}</span></div>
-              </div>
-              <p className="text-xs text-slate-400">Avg achievement: {r.avgAchievementPct}%</p>
-            </div>
-          </button>
+              <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 6 }}>
+                Avg achievement {r.avgAchievementPct}%
+              </Typography.Text>
+              <Row gutter={[8, 8]} style={{ marginTop: 8 }}>
+                <Col span={12}><Typography.Text type="secondary" style={{ fontSize: 11 }}>Sales</Typography.Text><div><Typography.Text>{formatInr(r.totalSales)}</Typography.Text></div></Col>
+                <Col span={12}><Typography.Text type="secondary" style={{ fontSize: 11 }}>Incentive</Typography.Text><div><Typography.Text style={{ color: "#047857" }}>{formatInr(r.totalIncentive)}</Typography.Text></div></Col>
+                <Col span={12}><Typography.Text type="secondary" style={{ fontSize: 11 }}>Stores</Typography.Text><div><Typography.Text>{r.storeCount}</Typography.Text></div></Col>
+                <Col span={12}><Typography.Text type="secondary" style={{ fontSize: 11 }}>Earning</Typography.Text><div><Typography.Text>{r.employeeCount} / {r.totalEmployees}</Typography.Text></div></Col>
+              </Row>
+            </Card>
+          </Col>
         ))}
-      </div>
-    </div>
+      </Row>
+    </Space>
   );
 }
 
@@ -209,121 +205,173 @@ type StoreRow = { storeCode: string; storeName: string; vertical: string; storeF
 function StoreView({ data, onDrill }: { data: Record<string, unknown>; onDrill: (label: string, p: Record<string, string>) => void }) {
   const summary = data.summary as { city: string; totalIncentive: number; storeCount: number };
   const rows = data.rows as StoreRow[];
-  const { sorted, sortKey, sortDir, toggle } = useSortable<StoreRow>(rows, "totalIncentive");
+
+  const columns: ColumnsType<StoreRow> = [
+    {
+      title: "Store",
+      key: "store",
+      render: (_, r) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{r.storeName}</Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.storeCode} · {r.storeFormat}</Typography.Text>
+        </Space>
+      ),
+    },
+    { title: "Vertical", dataIndex: "vertical", width: 110 },
+    { title: "Target", dataIndex: "target", align: "right", sorter: (a, b) => a.target - b.target, render: (v: number) => formatInr(v) },
+    { title: "Actual", dataIndex: "actual", align: "right", sorter: (a, b) => a.actual - b.actual, render: (v: number) => formatInr(v) },
+    {
+      title: "Achievement",
+      dataIndex: "achievementPct",
+      align: "center",
+      sorter: (a, b) => a.achievementPct - b.achievementPct,
+      render: (pct: number) => (
+        <Flex align="center" gap={8} justify="center">
+          <div style={{ width: 80 }}><AchievementBar pct={pct} /></div>
+          <Typography.Text style={{ width: 40 }}>{pct}%</Typography.Text>
+        </Flex>
+      ),
+    },
+    {
+      title: "Incentive",
+      dataIndex: "totalIncentive",
+      align: "right",
+      defaultSortOrder: "descend",
+      sorter: (a, b) => a.totalIncentive - b.totalIncentive,
+      render: (v: number) => formatInr(v),
+    },
+    { title: "Employees", dataIndex: "employeeCount", align: "center", sorter: (a, b) => a.employeeCount - b.employeeCount },
+  ];
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <Stat icon={<MapPin size={16} />} label="City" value={summary.city} />
-        <Stat icon={<TrendingUp size={16} />} label="Total Incentive" value={formatInr(summary.totalIncentive)} />
-        <Stat icon={<Store size={16} />} label="Stores" value={formatNumber(summary.storeCount)} />
-      </div>
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr>
-            <th className="p-3 text-left">Store</th>
-            <th className="p-3 text-left">Vertical</th>
-            <SortHeader label="Target" active={sortKey === "target"} dir={sortKey === "target" ? sortDir : null} onClick={() => toggle("target")} className="text-right" />
-            <SortHeader label="Actual" active={sortKey === "actual"} dir={sortKey === "actual" ? sortDir : null} onClick={() => toggle("actual")} className="text-right" />
-            <SortHeader label="Achievement" active={sortKey === "achievementPct"} dir={sortKey === "achievementPct" ? sortDir : null} onClick={() => toggle("achievementPct")} className="text-center" />
-            <SortHeader label="Incentive" active={sortKey === "totalIncentive"} dir={sortKey === "totalIncentive" ? sortDir : null} onClick={() => toggle("totalIncentive")} className="text-right" />
-            <SortHeader label="Employees" active={sortKey === "employeeCount"} dir={sortKey === "employeeCount" ? sortDir : null} onClick={() => toggle("employeeCount")} className="text-center" />
-            <th className="p-3 w-6"></th>
-          </tr></thead>
-          <tbody>
-            {sorted.map((r) => (
-              <tr key={r.storeCode} onClick={() => onDrill(r.storeName, { storeCode: r.storeCode })}
-                className="border-t border-slate-100 hover:bg-blue-50/50 cursor-pointer transition-colors">
-                <td className="p-3"><p className="font-medium text-slate-900">{r.storeName}</p><p className="text-xs text-slate-400">{r.storeCode} · {r.storeFormat}</p></td>
-                <td className="p-3 text-xs">{r.vertical}</td>
-                <td className="p-3 text-right">{formatInr(r.target)}</td>
-                <td className="p-3 text-right">{formatInr(r.actual)}</td>
-                <td className="p-3"><div className="flex items-center gap-2"><AchievementBar pct={r.achievementPct} /><span className="text-xs font-medium w-12 text-right">{r.achievementPct}%</span></div></td>
-                <td className="p-3 text-right font-medium">{formatInr(r.totalIncentive)}</td>
-                <td className="p-3 text-center">{r.employeeCount}</td>
-                <td className="p-3"><ChevronRight size={14} className="text-slate-300" /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Row gutter={[12, 12]}>
+        <Col xs={24} sm={8}><StatCard icon={<MapPin size={16} />} label="City" value={summary.city} /></Col>
+        <Col xs={24} sm={8}><StatCard icon={<TrendingUp size={16} />} label="Total incentive" value={formatInr(summary.totalIncentive)} valueColor="#047857" /></Col>
+        <Col xs={24} sm={8}><StatCard icon={<Store size={16} />} label="Stores" value={formatNumber(summary.storeCount)} /></Col>
+      </Row>
+      <Table<StoreRow>
+        rowKey="storeCode"
+        size="small"
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        scroll={{ x: "max-content" }}
+        onRow={(r) => ({
+          onClick: () => onDrill(r.storeName, { city: summary.city, storeCode: r.storeCode }),
+          style: { cursor: "pointer" },
+        })}
+      />
+    </Space>
   );
 }
 
 // ── Level 3: Store Detail (departments + employees) ──
 type EmpRow = { employeeId: string; employeeName: string; role: string; baseIncentive: number; multiplierPct: number; achievementPct: number; finalIncentive: number };
+type StoreDetailSummary = {
+  storeCode: string;
+  storeName: string;
+  vertical: string;
+  city?: string;
+  totalIncentive: number;
+  employeeCount: number;
+  totalEmployees: number;
+};
+
 function StoreDetailView({ data, onDrill }: { data: Record<string, unknown>; onDrill: (label: string, p: Record<string, string>) => void }) {
-  const summary = data.summary as { storeCode: string; storeName: string; vertical: string; totalIncentive: number; employeeCount: number; totalEmployees: number };
+  const summary = data.summary as StoreDetailSummary;
   const departments = data.departments as Array<{ department: string; vertical: string; target: number; actual: number; achievementPct: number }>;
   const employees = data.employees as EmpRow[];
-  const { sorted, sortKey, sortDir, toggle } = useSortable<EmpRow>(employees, "finalIncentive");
+
+  const deptColumns: ColumnsType<(typeof departments)[number]> = [
+    { title: "Department", dataIndex: "department" },
+    { title: "Target", dataIndex: "target", align: "right", render: (v: number) => formatInr(v) },
+    { title: "Actual", dataIndex: "actual", align: "right", render: (v: number) => formatInr(v) },
+    {
+      title: "Achievement",
+      dataIndex: "achievementPct",
+      align: "center",
+      render: (pct: number) => (
+        <Flex align="center" gap={8} justify="center">
+          <div style={{ width: 72 }}><AchievementBar pct={pct} /></div>
+          <Typography.Text style={{ width: 36 }}>{pct}%</Typography.Text>
+        </Flex>
+      ),
+    },
+  ];
+
+  const empColumns: ColumnsType<EmpRow> = [
+    {
+      title: "Employee",
+      key: "emp",
+      render: (_, r) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{r.employeeName}</Typography.Text>
+          <Typography.Text type="secondary" code style={{ fontSize: 11 }}>{r.employeeId}</Typography.Text>
+        </Space>
+      ),
+    },
+    { title: "Role", dataIndex: "role", width: 80 },
+    { title: "Eligible incentive", dataIndex: "baseIncentive", align: "right", sorter: (a, b) => a.baseIncentive - b.baseIncentive, render: (v: number) => formatInr(v) },
+    {
+      title: "Multiplier",
+      dataIndex: "multiplierPct",
+      align: "right",
+      sorter: (a, b) => a.multiplierPct - b.multiplierPct,
+      render: (v: number) => (v > 0 ? `${v}%` : "—"),
+    },
+    {
+      title: "Earned incentive",
+      dataIndex: "finalIncentive",
+      align: "right",
+      defaultSortOrder: "descend",
+      sorter: (a, b) => a.finalIncentive - b.finalIncentive,
+      render: (v: number) => <Typography.Text strong style={{ color: "#047857" }}>{formatInr(v)}</Typography.Text>,
+    },
+  ];
+
+  const drillEmployee = (r: EmpRow) => {
+    const p: Record<string, string> = { employeeId: r.employeeId, storeCode: summary.storeCode };
+    if (summary.city) p.city = summary.city;
+    onDrill(r.employeeName, p);
+  };
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat icon={<Store size={16} />} label="Store" value={summary.storeName ?? summary.storeCode} />
-        <Stat icon={<Briefcase size={16} />} label="Vertical" value={summary.vertical} />
-        <Stat icon={<TrendingUp size={16} />} label="Total Incentive" value={formatInr(summary.totalIncentive)} accent="text-emerald-700" />
-        <Stat icon={<Users size={16} />} label="Earning / Total" value={`${formatNumber(summary.employeeCount)} of ${formatNumber(summary.totalEmployees ?? summary.employeeCount)}`} />
-      </div>
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Row gutter={[12, 12]}>
+        <Col xs={12} lg={6}><StatCard icon={<Store size={16} />} label="Store" value={summary.storeName ?? summary.storeCode} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<Briefcase size={16} />} label="Vertical" value={summary.vertical} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Total incentive" value={formatInr(summary.totalIncentive)} valueColor="#047857" /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<Users size={16} />} label="Earning / total" value={`${formatNumber(summary.employeeCount)} / ${formatNumber(summary.totalEmployees ?? summary.employeeCount)}`} /></Col>
+      </Row>
 
-      {departments.length > 0 && (
-        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-            <h3 className="text-sm font-medium text-slate-700">Department Targets & Achievement</h3>
-          </div>
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-600"><tr>
-              <th className="p-3 text-left">Department</th><th className="p-3 text-right">Target</th><th className="p-3 text-right">Actual</th>
-              <th className="p-3 text-center">Achievement</th>
-            </tr></thead>
-            <tbody>
-              {departments.map((r) => (
-                <tr key={r.department} className="border-t border-slate-100">
-                  <td className="p-3 font-medium text-slate-900">{r.department}</td>
-                  <td className="p-3 text-right">{formatInr(r.target)}</td>
-                  <td className="p-3 text-right">{formatInr(r.actual)}</td>
-                  <td className="p-3"><div className="flex items-center gap-2"><AchievementBar pct={r.achievementPct} /><span className="text-xs font-medium w-12 text-right">{r.achievementPct}%</span></div></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {departments.length > 0 ? (
+        <Card title="Department targets & achievement" size="small">
+          <Table
+            rowKey="department"
+            size="small"
+            pagination={false}
+            columns={deptColumns}
+            dataSource={departments}
+          />
+        </Card>
+      ) : null}
 
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-          <h3 className="text-sm font-medium text-slate-700">Employee Incentives</h3>
-        </div>
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr>
-            <th className="p-3 text-left">Employee</th>
-            <th className="p-3 text-left">Role</th>
-            <SortHeader label="Eligible Incentive" active={sortKey === "baseIncentive"} dir={sortKey === "baseIncentive" ? sortDir : null} onClick={() => toggle("baseIncentive")} className="text-right" />
-            <SortHeader label="Multiplier" active={sortKey === "multiplierPct"} dir={sortKey === "multiplierPct" ? sortDir : null} onClick={() => toggle("multiplierPct")} className="text-right" />
-            <SortHeader label="Earned Incentive" active={sortKey === "finalIncentive"} dir={sortKey === "finalIncentive" ? sortDir : null} onClick={() => toggle("finalIncentive")} className="text-right" />
-            <th className="p-3 w-6"></th>
-          </tr></thead>
-          <tbody>
-            {sorted.length === 0 && (
-              <tr><td colSpan={6} className="p-4 text-center text-slate-400">No incentive data for this period</td></tr>
-            )}
-            {sorted.map((r) => (
-              <tr key={r.employeeId} onClick={() => onDrill(r.employeeName, { employeeId: r.employeeId })}
-                className="border-t border-slate-100 hover:bg-blue-50/50 cursor-pointer transition-colors">
-                <td className="p-3"><p className="font-medium text-slate-900">{r.employeeName}</p><p className="text-xs text-slate-400">{r.employeeId}</p></td>
-                <td className="p-3">{r.role}</td>
-                <td className="p-3 text-right">{formatInr(r.baseIncentive)}</td>
-                <td className="p-3 text-right">{r.multiplierPct > 0 ? `${r.multiplierPct}%` : "\u2014"}</td>
-                <td className="p-3 text-right font-semibold text-emerald-700">{formatInr(r.finalIncentive)}</td>
-                <td className="p-3"><ChevronRight size={14} className="text-slate-300" /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+      <Card title="Employee incentives" size="small">
+        <Table<EmpRow>
+          rowKey="employeeId"
+          size="small"
+          pagination={false}
+          columns={empColumns}
+          dataSource={employees}
+          locale={{ emptyText: "No incentive data for this period" }}
+          onRow={(r) => ({
+            onClick: () => drillEmployee(r),
+            style: { cursor: "pointer" },
+          })}
+        />
+      </Card>
+    </Space>
   );
 }
 
@@ -334,29 +382,46 @@ function EmployeeDetailView({ data }: { data: Record<string, unknown> }) {
   const message = data.message as string;
   const period = data.period as { start: string; end: string };
 
-  if (!emp) return <p className="text-sm text-slate-500">Employee not found.</p>;
+  if (!emp) return <Typography.Text type="secondary">Employee not found.</Typography.Text>;
 
   const firstName = emp.employeeName.split(" ")[0];
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-5">
-        <div className="flex items-center gap-3 mb-3">
-          <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-sm">
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Card>
+        <Flex align="center" gap={12} style={{ marginBottom: 12 }}>
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: "50%",
+              background: "#dbeafe",
+              color: "#1d4ed8",
+              fontWeight: 700,
+              fontSize: 14,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
             {emp.employeeName.split(" ").map((w) => w[0]).join("").slice(0, 2)}
           </div>
           <div>
-            <h3 className="font-semibold text-slate-900">{emp.employeeName}</h3>
-            <p className="text-xs text-slate-500">{emp.role} · {emp.storeCode} — {emp.storeName} · {period.start} to {period.end}</p>
+            <Typography.Title level={5} style={{ margin: 0 }}>{emp.employeeName}</Typography.Title>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {emp.role} · {emp.storeCode} — {emp.storeName} · {period.start} to {period.end}
+            </Typography.Text>
           </div>
-        </div>
-        <div className="rounded-lg bg-blue-50 border border-blue-100 p-3 text-sm text-blue-900">{message}</div>
-      </div>
+        </Flex>
+        <Typography.Paragraph style={{ marginBottom: 0, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: 12 }}>
+          {message}
+        </Typography.Paragraph>
+      </Card>
 
       {vertical === "ELECTRONICS" && <ElectronicsDetail data={data} firstName={firstName} />}
       {vertical === "GROCERY" && <GroceryDetail data={data} firstName={firstName} />}
       {vertical === "FNL" && <FnlDetail data={data} firstName={firstName} />}
-    </div>
+    </Space>
   );
 }
 
@@ -374,12 +439,12 @@ function ElectronicsDetail({ data, firstName }: { data: Record<string, unknown>;
 
   return (
     <>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat icon={<TrendingUp size={16} />} label={standing.employeeDepartment ? "Dept Achievement" : "Store Achievement"} value={`${standing.achievementPct}%`} />
-        <Stat icon={<TrendingUp size={16} />} label="Multiplier" value={`${standing.currentMultiplierPct}%`} />
-        <Stat icon={<TrendingUp size={16} />} label="Base Incentive" value={formatInr(standing.baseIncentive)} />
-        <Stat icon={<TrendingUp size={16} />} label="Final Incentive" value={formatInr(standing.finalIncentive)} accent="text-emerald-700" />
-      </div>
+      <Row gutter={[12, 12]}>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label={standing.employeeDepartment ? "Dept achievement" : "Store achievement"} value={`${standing.achievementPct}%`} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Multiplier" value={`${standing.currentMultiplierPct}%`} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Base incentive" value={formatInr(standing.baseIncentive)} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Final incentive" value={formatInr(standing.finalIncentive)} valueColor="#047857" /></Col>
+      </Row>
 
       {/* Incentive calculation explainer */}
       <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
@@ -467,7 +532,7 @@ function ElectronicsDetail({ data, firstName }: { data: Record<string, unknown>;
           <tbody>
             {tiers.map((t, i) => (
               <tr key={i} className={`border-t border-slate-100 ${t.isCurrentTier ? "bg-blue-50 font-medium" : ""}`}>
-                <td className="p-2">{t.from}% — {t.to >= 999 ? "& above" : `${t.to}%`}{t.isCurrentTier && <span className="ml-2 text-xs text-blue-600 font-semibold">CURRENT</span>}</td>
+                <td className="p-2">{t.from}% — {t.to >= 999 ? "or above" : `${t.to}%`}{t.isCurrentTier ? <span className="ml-2 text-xs text-blue-600 font-semibold">CURRENT</span> : null}</td>
                 <td className="p-2 text-right">{t.multiplierPct}%</td>
                 <td className="p-2 text-right">{formatInr(t.incentiveAtTier)}</td>
               </tr>
@@ -487,12 +552,12 @@ function GroceryDetail({ data, firstName }: { data: Record<string, unknown>; fir
 
   return (
     <>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat icon={<Store size={16} />} label="Campaign" value={standing.campaignName} />
-        <Stat icon={<TrendingUp size={16} />} label="Achievement" value={`${standing.achievementPct}%`} />
-        <Stat icon={<Users size={16} />} label="Pieces Sold" value={formatNumber(standing.totalPiecesSold)} />
-        <Stat icon={<TrendingUp size={16} />} label={`${firstName}'s Payout`} value={formatInr(standing.yourPayout)} accent="text-emerald-700" />
-      </div>
+      <Row gutter={[12, 12]}>
+        <Col xs={12} lg={6}><StatCard icon={<Store size={16} />} label="Campaign" value={standing.campaignName} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Achievement" value={`${standing.achievementPct}%`} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<Users size={16} />} label="Pieces sold" value={formatNumber(standing.totalPiecesSold)} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label={`${firstName}'s payout`} value={formatInr(standing.yourPayout)} valueColor="#047857" /></Col>
+      </Row>
 
       {/* Calculation explainer */}
       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
@@ -558,7 +623,7 @@ function GroceryDetail({ data, firstName }: { data: Record<string, unknown>; fir
           <tbody>
             {slabs.map((s, i) => (
               <tr key={i} className={`border-t border-slate-100 ${s.isCurrentSlab ? "bg-emerald-50 font-medium" : ""}`}>
-                <td className="p-2">{s.from}% — {s.to >= 999 ? "& above" : `${s.to}%`}{s.isCurrentSlab && <span className="ml-2 text-xs text-emerald-600 font-semibold">CURRENT</span>}</td>
+                <td className="p-2">{s.from}% — {s.to >= 999 ? "or above" : `${s.to}%`}{s.isCurrentSlab ? <span className="ml-2 text-xs text-emerald-600 font-semibold">CURRENT</span> : null}</td>
                 <td className="p-2 text-right">{"\u20B9"}{s.rate}</td>
                 <td className="p-2 text-right">{formatInr(s.payoutAtSlab)}</td>
               </tr>
@@ -578,12 +643,12 @@ function FnlDetail({ data, firstName }: { data: Record<string, unknown>; firstNa
 
   return (
     <>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat icon={<TrendingUp size={16} />} label="Achievement" value={`${standing.achievementPct}%`} />
-        <Stat icon={<TrendingUp size={16} />} label="Store Pool" value={standing.exceeded ? formatInr(standing.storePool) : "\u20B90"} />
-        <Stat icon={<User size={16} />} label="Attendance" value={`${standing.yourAttendanceDays} days ${standing.attendanceEligible ? "\u2713" : "\u2717"}`} />
-        <Stat icon={<TrendingUp size={16} />} label={`${firstName}'s Payout`} value={formatInr(standing.yourPayout)} accent="text-emerald-700" />
-      </div>
+      <Row gutter={[12, 12]}>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Achievement" value={`${standing.achievementPct}%`} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Store pool" value={standing.exceeded ? formatInr(standing.storePool) : "₹0"} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<User size={16} />} label="Attendance" value={`${standing.yourAttendanceDays} days ${standing.attendanceEligible ? "✓" : "✗"}`} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label={`${firstName}'s payout`} value={formatInr(standing.yourPayout)} valueColor="#047857" /></Col>
+      </Row>
 
       {/* Calculation explainer */}
       <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
