@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { startOfMonth, endOfMonth } from "date-fns";
 import { getAllStoresSummary } from "@/server/services/incentives";

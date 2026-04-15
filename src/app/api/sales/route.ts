@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { TransactionType, Vertical } from "@prisma/client";
 import { listSales } from "@/server/services/sales";
