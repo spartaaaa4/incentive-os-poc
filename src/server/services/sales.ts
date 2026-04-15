@@ -55,13 +55,16 @@ function brandMatches(brandFilter: string, brand: string | null): boolean {
     .some((token) => normalized.includes(token));
 }
 
-const familyCodeToName: Record<string, string> = {
-  FF01: "Laptops & Desktops",
-  FF03: "Tablets",
-  FH07: "Photography",
-  FK01: "Wireless Phones",
-  FH01: "Home Entertainment TVs",
-  FJ03: "Large Appliances",
+const familyCodeToSlabNames: Record<string, string[]> = {
+  FF01: ["Laptops & Desktops"], FF03: ["Tablets"],
+  FH01: ["Home Entertainment TVs"], FH07: ["Photography"],
+  FK01: ["Wireless Phones"],
+  FI01: ["SDA & Consumer Appliances"], FI02: ["SDA & Consumer Appliances"],
+  FI04: ["SDA & Consumer Appliances"], FI05: ["SDA & Consumer Appliances"],
+  FI06: ["SDA & Consumer Appliances"], FI07: ["SDA & Consumer Appliances"],
+  FJ01: ["Large Appliances"], FJ02: ["Large Appliances"],
+  FJ03: ["Large Appliances", "Large Washing Machines (LWC)"],
+  FJ04: ["Large Appliances"], FJ05: ["Large Appliances"],
 };
 
 type SlabRow = {
@@ -98,11 +101,12 @@ function computePerUnitIncentive(
   if (isElectronicsExcluded(brand, familyCode)) return 0;
 
   const unitPrice = grossAmount / quantity;
-  const familyName = familyCodeToName[familyCode] ?? familyCode;
+  const slabNames = familyCodeToSlabNames[familyCode];
+  if (!slabNames) return 0;
 
   const slab = slabs.find(
     (s) =>
-      s.productFamily.toLowerCase().includes(familyName.toLowerCase().replace(" & ", " ")) &&
+      slabNames.some((name) => s.productFamily === name) &&
       brandMatches(s.brandFilter, brand) &&
       unitPrice >= asNumber(s.priceFrom) &&
       unitPrice <= asNumber(s.priceTo),

@@ -42,21 +42,39 @@ async function getCitySummary(params: Params) {
   });
   const storeCodes = stores.map((s) => s.storeCode);
 
-  const ledger = await db.incentiveLedger.findMany({
-    where: {
-      storeCode: { in: storeCodes },
-      periodStart: { gte: params.periodStart },
-      periodEnd: { lte: params.periodEnd },
-      ...verticalFilter,
-    },
-    select: { storeCode: true, employeeId: true, finalIncentive: true, achievementPct: true },
-  });
+  const [ledger, salesAgg, totalActiveEmps] = await Promise.all([
+    db.incentiveLedger.findMany({
+      where: {
+        storeCode: { in: storeCodes },
+        periodStart: { gte: params.periodStart },
+        periodEnd: { lte: params.periodEnd },
+        ...verticalFilter,
+      },
+      select: { storeCode: true, employeeId: true, finalIncentive: true, achievementPct: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["storeCode"] as const,
+      _sum: { grossAmount: true },
+      where: { storeCode: { in: storeCodes }, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE", ...verticalFilter },
+    }),
+    db.employeeMaster.groupBy({
+      by: ["storeCode"] as const,
+      _count: true,
+      where: { payrollStatus: "ACTIVE", storeCode: { in: storeCodes } },
+    }),
+  ]);
 
-  const cityMap = new Map<string, { state: string; stores: Set<string>; employees: Set<string>; incentive: number; achSum: number; achCount: number }>();
+  const salesByStore = new Map(salesAgg.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
+  const totalEmpsByStore = new Map(totalActiveEmps.map((e) => [e.storeCode, e._count]));
+
+  const cityMap = new Map<string, { state: string; stores: Set<string>; earningEmployees: Set<string>; totalEmployees: number; incentive: number; sales: number; achSum: number; achCount: number }>();
   const storeToCityMap = new Map<string, string>();
   for (const s of stores) {
-    if (!cityMap.has(s.city)) cityMap.set(s.city, { state: s.state, stores: new Set(), employees: new Set(), incentive: 0, achSum: 0, achCount: 0 });
-    cityMap.get(s.city)!.stores.add(s.storeCode);
+    if (!cityMap.has(s.city)) cityMap.set(s.city, { state: s.state, stores: new Set(), earningEmployees: new Set(), totalEmployees: 0, incentive: 0, sales: 0, achSum: 0, achCount: 0 });
+    const bucket = cityMap.get(s.city)!;
+    bucket.stores.add(s.storeCode);
+    bucket.sales += salesByStore.get(s.storeCode) ?? 0;
+    bucket.totalEmployees += totalEmpsByStore.get(s.storeCode) ?? 0;
     storeToCityMap.set(s.storeCode, s.city);
   }
 
@@ -64,7 +82,7 @@ async function getCitySummary(params: Params) {
     const city = storeToCityMap.get(row.storeCode);
     if (!city) continue;
     const bucket = cityMap.get(city)!;
-    bucket.employees.add(row.employeeId);
+    if (asNumber(row.finalIncentive) > 0) bucket.earningEmployees.add(row.employeeId);
     bucket.incentive += asNumber(row.finalIncentive);
     if (row.achievementPct != null) { bucket.achSum += asNumber(row.achievementPct); bucket.achCount++; }
   }
@@ -73,16 +91,71 @@ async function getCitySummary(params: Params) {
     city,
     state: b.state,
     storeCount: b.stores.size,
-    employeeCount: b.employees.size,
+    employeeCount: b.earningEmployees.size,
+    totalEmployees: b.totalEmployees,
+    totalSales: Math.round(b.sales),
     totalIncentive: Math.round(b.incentive),
     avgAchievementPct: b.achCount > 0 ? Math.round((b.achSum / b.achCount) * 10) / 10 : 0,
   })).sort((a, b) => b.totalIncentive - a.totalIncentive);
 
   return {
     level: "city" as const,
-    summary: { totalIncentive: rows.reduce((s, r) => s + r.totalIncentive, 0), totalEmployees: rows.reduce((s, r) => s + r.employeeCount, 0), storeCount: rows.reduce((s, r) => s + r.storeCount, 0) },
+    summary: {
+      totalIncentive: rows.reduce((s, r) => s + r.totalIncentive, 0),
+      totalEmployees: rows.reduce((s, r) => s + r.totalEmployees, 0),
+      employeesEarning: rows.reduce((s, r) => s + r.employeeCount, 0),
+      totalSales: rows.reduce((s, r) => s + r.totalSales, 0),
+      storeCount: rows.reduce((s, r) => s + r.storeCount, 0),
+    },
     rows,
   };
+}
+
+// ───── All-stores summary (for Central dashboard) ─────
+
+export async function getAllStoresSummary(params: Pick<Params, "vertical" | "periodStart" | "periodEnd">) {
+  const verticalFilter = params.vertical ? { vertical: params.vertical as Vertical } : {};
+  const stores = await db.storeMaster.findMany({
+    where: { ...verticalFilter },
+    include: { employees: { where: { payrollStatus: "ACTIVE" }, select: { employeeId: true } } },
+  });
+  const storeCodes = stores.map((s) => s.storeCode);
+
+  const [ledger, targets, sales] = await Promise.all([
+    db.incentiveLedger.findMany({
+      where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter },
+      select: { storeCode: true, finalIncentive: true },
+    }),
+    db.target.findMany({
+      where: { storeCode: { in: storeCodes }, status: "ACTIVE", periodStart: { lte: params.periodEnd }, periodEnd: { gte: params.periodStart }, ...verticalFilter },
+      select: { storeCode: true, targetValue: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["storeCode"] as const,
+      _sum: { grossAmount: true },
+      where: { storeCode: { in: storeCodes }, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE", ...verticalFilter },
+    }),
+  ]);
+
+  const salesByStore = new Map(sales.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
+  const targetByStore = new Map<string, number>();
+  for (const t of targets) { targetByStore.set(t.storeCode, (targetByStore.get(t.storeCode) ?? 0) + asNumber(t.targetValue)); }
+  const incByStore = new Map<string, number>();
+  for (const r of ledger) { incByStore.set(r.storeCode, (incByStore.get(r.storeCode) ?? 0) + asNumber(r.finalIncentive)); }
+
+  const rows = stores.map((s) => {
+    const target = targetByStore.get(s.storeCode) ?? 0;
+    const actual = salesByStore.get(s.storeCode) ?? 0;
+    return {
+      storeCode: s.storeCode, storeName: s.storeName, vertical: s.vertical, storeFormat: s.storeFormat,
+      state: s.state, city: s.city,
+      employeeCount: s.employees.length, totalIncentive: Math.round(incByStore.get(s.storeCode) ?? 0),
+      target: Math.round(target), actual: Math.round(actual),
+      achievementPct: target > 0 ? Math.round((actual / target) * 1000) / 10 : 0,
+    };
+  }).sort((a, b) => b.totalIncentive - a.totalIncentive);
+
+  return { level: "allStores" as const, rows };
 }
 
 // ───── Level 2: Store summary ─────
@@ -137,7 +210,10 @@ async function getStoreSummary(params: Params) {
 // ───── Level 3: Store detail (departments + employees) ─────
 
 async function getStoreDetail(params: Params) {
-  const store = await db.storeMaster.findUnique({ where: { storeCode: params.storeCode! } });
+  const store = await db.storeMaster.findUnique({
+    where: { storeCode: params.storeCode! },
+    include: { employees: { where: { payrollStatus: "ACTIVE" }, select: { employeeId: true } } },
+  });
   if (!store) return { level: "storeDetail" as const, summary: {}, departments: [], employees: [] };
 
   const [ledger, targets, salesAgg] = await Promise.all([
@@ -209,7 +285,7 @@ async function getStoreDetail(params: Params) {
     level: "storeDetail" as const,
     summary: {
       storeCode: store.storeCode, storeName: store.storeName, vertical: store.vertical,
-      totalIncentive, employeeCount: employees.length,
+      totalIncentive, employeeCount: employees.length, totalEmployees: store.employees.length,
     },
     departments,
     employees,
@@ -249,9 +325,16 @@ async function getEmployeeDetail(params: Params) {
   return buildFnlDetail(employee, ledgerRows, params);
 }
 
-const familyCodeToName: Record<string, string> = {
-  FF01: "Laptops & Desktops", FF03: "Tablets", FH07: "Photography",
-  FK01: "Wireless Phones", FH01: "Home Entertainment TVs", FJ03: "Large Appliances",
+const familyCodeToSlabNames: Record<string, string[]> = {
+  FF01: ["Laptops & Desktops"], FF03: ["Tablets"],
+  FH01: ["Home Entertainment TVs"], FH07: ["Photography"],
+  FK01: ["Wireless Phones"],
+  FI01: ["SDA & Consumer Appliances"], FI02: ["SDA & Consumer Appliances"],
+  FI04: ["SDA & Consumer Appliances"], FI05: ["SDA & Consumer Appliances"],
+  FI06: ["SDA & Consumer Appliances"], FI07: ["SDA & Consumer Appliances"],
+  FJ01: ["Large Appliances"], FJ02: ["Large Appliances"],
+  FJ03: ["Large Appliances", "Large Washing Machines (LWC)"],
+  FJ04: ["Large Appliances"], FJ05: ["Large Appliances"],
 };
 
 function isElectronicsExcluded(brand: string | null, familyCode: string | null): boolean {
@@ -282,10 +365,11 @@ function brandMatches(brandFilter: string, brand: string | null): boolean {
 async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: Params) {
   const row = ledgerRows[0];
   const details = row.calculationDetails as Record<string, unknown>;
-  const storeTarget = asNumber(details.storeTarget);
-  const storeActual = asNumber(details.storeActual);
+  const empDept = (details.employeeDepartment as string) ?? null;
+  const departmentTarget = asNumber(details.departmentTarget);
+  const departmentActual = asNumber(details.departmentActual);
   const departments = (details.departments ?? {}) as Record<string, { target: number; actual: number; achievementPct: number; multiplierPct: number }>;
-  const achievementPct = storeTarget > 0 ? Math.round((storeActual / storeTarget) * 1000) / 10 : 0;
+  const achievementPct = departmentTarget > 0 ? Math.round((departmentActual / departmentTarget) * 1000) / 10 : 0;
   const base = asNumber(row.baseIncentive);
   const currentMultiplier = asNumber(row.multiplierApplied);
   const final = asNumber(row.finalIncentive);
@@ -325,13 +409,14 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
 
   const recentSales = txns.map((txn) => {
     const unitPrice = asNumber(txn.grossAmount) / (txn.quantity || 1);
-    const familyName = familyCodeToName[txn.productFamilyCode ?? ""] ?? txn.productFamilyCode ?? "Other";
+    const slabNames = familyCodeToSlabNames[txn.productFamilyCode ?? ""];
+    const familyName = slabNames?.[0] ?? txn.productFamilyCode ?? "Other";
     const excluded = isElectronicsExcluded(txn.brand, txn.productFamilyCode);
     let incentiveEarned = 0;
-    if (!excluded && txn.productFamilyCode) {
+    if (!excluded && slabNames) {
       const slab = slabs.find(
         (s: { productFamily: string; brandFilter: string; priceFrom: unknown; priceTo: unknown }) =>
-          s.productFamily.toLowerCase().includes(familyName.toLowerCase().replace(" & ", " ")) &&
+          slabNames.some((name) => s.productFamily === name) &&
           brandMatches(s.brandFilter, txn.brand) &&
           unitPrice >= asNumber(s.priceFrom) && unitPrice <= asNumber(s.priceTo),
       );
@@ -354,11 +439,16 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
     vertical: "ELECTRONICS",
     period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
-    currentStanding: { storeTarget: Math.round(storeTarget), storeActual: Math.round(storeActual), achievementPct, currentMultiplierPct: currentMultiplier, baseIncentive: Math.round(base), finalIncentive: Math.round(final) },
+    currentStanding: {
+      employeeDepartment: empDept,
+      departmentTarget: Math.round(departmentTarget), departmentActual: Math.round(departmentActual),
+      achievementPct, currentMultiplierPct: currentMultiplier,
+      baseIncentive: Math.round(base), finalIncentive: Math.round(final),
+    },
     departments: deptBreakdown,
     multiplierTiers: multipliers,
     recentSales,
-    message: `Store is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
+    message: `${empDept ?? "Department"} is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
   };
 }
 
@@ -459,9 +549,10 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
   const actualSales = asNumber(details.actualSales);
   const targetValue = asNumber(details.targetValue);
   const exceeded = actualSales > targetValue;
-  const storePool = exceeded ? Math.round(actualSales * 0.01) : 0;
-
   const plan = latestRow.plan;
+  const planConfig = (plan.config ?? {}) as Record<string, unknown>;
+  const poolPct = asNumber(planConfig.poolPct ?? 1) / 100;
+  const storePool = exceeded ? Math.round(actualSales * poolPct) : 0;
   const storeEmployees = await db.employeeMaster.findMany({ where: { storeCode: employee.storeCode, payrollStatus: "ACTIVE" } });
   const smCount = storeEmployees.filter((e: { role: string }) => e.role === "SM").length;
   const dmCount = storeEmployees.filter((e: { role: string }) => e.role === "DM").length;

@@ -30,6 +30,7 @@ const tables: TableDef[] = [
       { name: "employee_name", type: "VARCHAR" },
       { name: "role", type: "ENUM (SM/DM/SA/BA)" },
       { name: "store_code", type: "VARCHAR(32)", key: "FK" },
+      { name: "department", type: "VARCHAR?" },
       { name: "payroll_status", type: "ENUM" },
       { name: "date_of_joining", type: "DATE" },
       { name: "date_of_exit", type: "DATE?" },

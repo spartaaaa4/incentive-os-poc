@@ -4,12 +4,22 @@ import { startOfMonth, endOfMonth } from "date-fns";
 import { db } from "@/lib/db";
 import { recalculateIncentives } from "@/server/calculations/engines";
 
-const approvalSchema = z.object({
-  entityType: z.enum(["PLAN", "TARGET"]),
-  entityId: z.number().int().positive(),
-  action: z.enum(["APPROVED", "REJECTED"]),
-  reason: z.string().optional(),
-});
+const approvalSchema = z
+  .object({
+    entityType: z.enum(["PLAN", "TARGET"]),
+    entityId: z.number().int().positive(),
+    action: z.enum(["APPROVED", "REJECTED"]),
+    /** Required when rejecting (min 5 chars after trim). */
+    reason: z.string().optional(),
+    /** Optional checker notes when approving. */
+    approvalComment: z.string().max(4000).optional(),
+  })
+  .refine(
+    (data) =>
+      data.action !== "REJECTED" ||
+      (data.reason?.trim().length ?? 0) >= 5,
+    { message: "Rejection reason is required (at least 5 characters).", path: ["reason"] },
+  );
 
 export async function POST(request: Request) {
   try {
@@ -17,7 +27,7 @@ export async function POST(request: Request) {
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
     }
-    const { entityType, entityId, action, reason } = parsed.data;
+    const { entityType, entityId, action, reason, approvalComment } = parsed.data;
 
     if (!entityId || !entityType) {
       return NextResponse.json({ error: "entityType and entityId are required" }, { status: 400 });
@@ -37,7 +47,8 @@ export async function POST(request: Request) {
           data: {
             status: newStatus,
             approvedBy: action === "APPROVED" ? "checker" : undefined,
-            rejectionReason: action === "REJECTED" ? reason : undefined,
+            rejectionReason:
+              action === "REJECTED" ? (reason?.trim() ?? null) : null,
           },
         });
 
@@ -73,7 +84,11 @@ export async function POST(request: Request) {
           entityType: entityType as "PLAN" | "TARGET" | "CAMPAIGN" | "CALCULATION",
           entityId: typeof entityId === "number" ? entityId : 0,
           action: action as "APPROVED" | "REJECTED",
-          newValue: { reason: reason ?? null },
+          newValue: {
+            rejectionReason: action === "REJECTED" ? (reason?.trim() ?? null) : null,
+            approvalComment:
+              action === "APPROVED" ? (approvalComment?.trim() || null) : null,
+          },
           performedBy: "checker",
         },
       });

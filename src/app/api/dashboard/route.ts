@@ -10,7 +10,9 @@ export async function GET(request: NextRequest) {
         ? (verticalParam as Vertical)
         : undefined;
 
-    const data = await getDashboardData(vertical);
+    const monthParam = request.nextUrl.searchParams.get("month");
+
+    const data = await getDashboardData(vertical, monthParam ?? undefined);
     return NextResponse.json(data);
   } catch (error) {
     console.error("Dashboard API error:", error);
