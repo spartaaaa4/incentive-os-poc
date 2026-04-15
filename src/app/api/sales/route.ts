@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
     const employeeId = request.nextUrl.searchParams.get("employeeId") ?? undefined;
     const dateFrom = request.nextUrl.searchParams.get("dateFrom");
     const dateTo = request.nextUrl.searchParams.get("dateTo");
+    const search = request.nextUrl.searchParams.get("search") ?? undefined;
 
     const data = await listSales({
       vertical:
@@ -25,6 +26,7 @@ export async function GET(request: NextRequest) {
       employeeId,
       dateFrom: dateFrom ? new Date(dateFrom) : undefined,
       dateTo: dateTo ? new Date(dateTo) : undefined,
+      search,
     });
 
     return NextResponse.json({ rows: data });

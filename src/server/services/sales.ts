@@ -9,6 +9,7 @@ type SalesFilters = {
   dateFrom?: Date;
   dateTo?: Date;
   transactionType?: TransactionType;
+  search?: string;
 };
 
 const excludedTypes = new Set<TransactionType>([
@@ -140,6 +141,16 @@ export async function listSales(filters: SalesFilters) {
             ...(filters.dateFrom ? { gte: startOfDay(filters.dateFrom) } : {}),
             ...(filters.dateTo ? { lte: endOfDay(filters.dateTo) } : {}),
           },
+        }
+      : {}),
+    ...(filters.search
+      ? {
+          OR: [
+            { transactionId: { contains: filters.search, mode: "insensitive" as const } },
+            { employeeId: { contains: filters.search, mode: "insensitive" as const } },
+            { articleCode: { contains: filters.search, mode: "insensitive" as const } },
+            { storeCode: { contains: filters.search, mode: "insensitive" as const } },
+          ],
         }
       : {}),
   };
