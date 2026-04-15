@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
     const dateFrom = request.nextUrl.searchParams.get("dateFrom");
     const dateTo = request.nextUrl.searchParams.get("dateTo");
     const search = request.nextUrl.searchParams.get("search") ?? undefined;
+    const page = parseInt(request.nextUrl.searchParams.get("page") ?? "1", 10);
+    const pageSize = parseInt(request.nextUrl.searchParams.get("pageSize") ?? "100", 10);
 
     const data = await listSales({
       vertical:
@@ -27,9 +29,11 @@ export async function GET(request: NextRequest) {
       dateFrom: dateFrom ? new Date(dateFrom) : undefined,
       dateTo: dateTo ? new Date(dateTo) : undefined,
       search,
+      page: isNaN(page) ? 1 : page,
+      pageSize: isNaN(pageSize) ? 100 : pageSize,
     });
 
-    return NextResponse.json({ rows: data });
+    return NextResponse.json(data);
   } catch (error) {
     console.error("Sales API error:", error);
     return NextResponse.json(

@@ -10,6 +10,8 @@ type SalesFilters = {
   dateTo?: Date;
   transactionType?: TransactionType;
   search?: string;
+  page?: number;
+  pageSize?: number;
 };
 
 const excludedTypes = new Set<TransactionType>([
@@ -130,6 +132,10 @@ function computeStatus(
 }
 
 export async function listSales(filters: SalesFilters) {
+  const page = Math.max(1, filters.page ?? 1);
+  const pageSize = Math.min(500, Math.max(1, filters.pageSize ?? 100));
+  const skip = (page - 1) * pageSize;
+
   const where = {
     ...(filters.vertical ? { vertical: filters.vertical } : {}),
     ...(filters.storeCode ? { storeCode: filters.storeCode } : {}),
@@ -155,19 +161,20 @@ export async function listSales(filters: SalesFilters) {
       : {}),
   };
 
-  const rows = await db.salesTransaction.findMany({
-    where,
-    include: {
-      store: true,
-      employee: true,
-    },
-    orderBy: [{ transactionDate: "desc" }, { transactionId: "desc" }],
-    take: 500,
-  });
+  const [rows, total] = await Promise.all([
+    db.salesTransaction.findMany({
+      where,
+      include: { store: true, employee: true },
+      orderBy: [{ transactionDate: "desc" }, { transactionId: "desc" }],
+      skip,
+      take: pageSize,
+    }),
+    db.salesTransaction.count({ where }),
+  ]);
 
   const slabs = await getElectronicsSlabs();
 
-  return rows.map((row) => {
+  const mapped = rows.map((row) => {
     const gross = asNumber(row.grossAmount);
     let incentiveAmount = 0;
     let incentiveLabel = "";
@@ -207,4 +214,6 @@ export async function listSales(filters: SalesFilters) {
       status: computeStatus(row.transactionType, row.vertical, incentiveAmount, row.brand, row.productFamilyCode),
     };
   });
+
+  return { rows: mapped, total, page, pageSize };
 }

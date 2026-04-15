@@ -36,9 +36,10 @@ type Filters = {
   employeeId: string;
   dateFrom: string;
   dateTo: string;
+  search: string;
 };
 
-const emptyFilters: Filters = { vertical: "", storeCode: "", transactionType: "", employeeId: "", dateFrom: "", dateTo: "" };
+const emptyFilters: Filters = { vertical: "", storeCode: "", transactionType: "", employeeId: "", dateFrom: "", dateTo: "", search: "" };
 
 const columnSpec = [
   { key: "transactionId", label: "Transaction ID", type: "String", required: true, description: "Unique identifier for the sales transaction" },
@@ -89,6 +90,9 @@ const inputClass = "rounded-lg border border-slate-300 bg-white px-3 py-2 text-s
 
 export function SalesView() {
   const [rows, setRows] = useState<SalesRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const pageSize = 100;
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState<Filters>(emptyFilters);
@@ -135,7 +139,7 @@ export function SalesView() {
       .catch(() => {});
   }, []);
 
-  const loadRows = useCallback(async (f: Filters) => {
+  const loadRows = useCallback(async (f: Filters, pg: number) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -145,18 +149,22 @@ export function SalesView() {
       if (f.employeeId) params.set("employeeId", f.employeeId);
       if (f.dateFrom) params.set("dateFrom", f.dateFrom);
       if (f.dateTo) params.set("dateTo", f.dateTo);
-      const qs = params.toString();
-      const response = await fetch(`/api/sales${qs ? `?${qs}` : ""}`);
+      if (f.search) params.set("search", f.search);
+      params.set("page", String(pg));
+      params.set("pageSize", String(pageSize));
+      const response = await fetch(`/api/sales?${params.toString()}`);
       if (!response.ok) throw new Error();
       const payload = await response.json();
       setRows(payload.rows ?? []);
+      setTotal(payload.total ?? 0);
     } catch {
       setRows([]);
+      setTotal(0);
     }
     setLoading(false);
-  }, []);
+  }, [pageSize]);
 
-  useEffect(() => { void loadRows(appliedFilters); }, [loadRows, appliedFilters]);
+  useEffect(() => { void loadRows(appliedFilters, page); }, [loadRows, appliedFilters, page]);
 
   const filteredStores = useMemo(() => {
     if (!filters.vertical) return stores;
@@ -168,10 +176,11 @@ export function SalesView() {
     return employees.filter((e) => e.storeCode === filters.storeCode);
   }, [employees, filters.storeCode]);
 
-  const handleApply = () => setAppliedFilters({ ...filters });
+  const handleApply = () => { setPage(1); setAppliedFilters({ ...filters }); };
   const handleReset = () => {
     setFilters(emptyFilters);
     setAppliedFilters(emptyFilters);
+    setPage(1);
   };
 
   const hasActiveFilters = Object.values(appliedFilters).some(Boolean);
@@ -237,7 +246,8 @@ export function SalesView() {
         return;
       }
       setImportResult({ imported: payload.imported ?? 0, skipped: payload.skipped ?? 0 });
-      await loadRows(appliedFilters);
+      setPage(1);
+      await loadRows(appliedFilters, 1);
     } catch {
       setCsvErrors(["Network error during import — check your connection and try again"]);
     }
@@ -324,6 +334,18 @@ export function SalesView() {
             <input type="date" value={filters.dateTo} onChange={(e) => updateFilter("dateTo", e.target.value)} className={inputClass} />
           </div>
 
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Search</label>
+            <input
+              type="text"
+              placeholder="Txn ID / Employee / Article"
+              value={filters.search}
+              onChange={(e) => updateFilter("search", e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors w-[200px]"
+            />
+          </div>
+
           <button onClick={handleApply}
             className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
             <Search size={14} /> Apply
@@ -343,18 +365,22 @@ export function SalesView() {
             </button>
           </div>
         </div>
-        {hasActiveFilters && (
-          <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-            <span>Showing {rows.length} results</span>
+        <div className="mt-3 flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+          <span className="font-medium text-slate-700">
+            {total === 0 ? "No results" : `Showing ${((page - 1) * pageSize) + 1}–${Math.min(page * pageSize, total)} of ${total.toLocaleString()} records`}
+          </span>
+          {hasActiveFilters && (
+            <>
             {appliedFilters.vertical && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.vertical}</span>}
             {appliedFilters.storeCode && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.storeCode}</span>}
             {appliedFilters.transactionType && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.transactionType}</span>}
             {appliedFilters.employeeId && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.employeeId}</span>}
             {appliedFilters.dateFrom && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">From {appliedFilters.dateFrom}</span>}
             {appliedFilters.dateTo && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">To {appliedFilters.dateTo}</span>}
-          </div>
-        )}
-      </div>
+            {appliedFilters.search && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">"{appliedFilters.search}"</span>}
+            </>
+          )}
+        </div>
 
       {/* Data table */}
       <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
@@ -419,6 +445,42 @@ export function SalesView() {
           </tbody>
         </table>
       </div>
+
+      {/* Pagination */}
+      {total > pageSize && (
+        <div className="flex items-center justify-between px-1">
+          <p className="text-xs text-slate-500">
+            Page {page} of {Math.ceil(total / pageSize)}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1 || loading}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              ← Previous
+            </button>
+            {Array.from({ length: Math.min(5, Math.ceil(total / pageSize)) }, (_, i) => {
+              const totalPages = Math.ceil(total / pageSize);
+              let start = Math.max(1, page - 2);
+              if (start + 4 > totalPages) start = Math.max(1, totalPages - 4);
+              return start + i;
+            }).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPage(p)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${p === page ? "bg-blue-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}>
+                {p}
+              </button>
+            ))}
+            <button
+              onClick={() => setPage((p) => Math.min(Math.ceil(total / pageSize), p + 1))}
+              disabled={page >= Math.ceil(total / pageSize) || loading}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Upload modal */}
       {showUpload && (
