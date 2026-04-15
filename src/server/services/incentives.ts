@@ -85,6 +85,53 @@ async function getCitySummary(params: Params) {
   };
 }
 
+// ───── All-stores summary (for Central dashboard) ─────
+
+export async function getAllStoresSummary(params: Pick<Params, "vertical" | "periodStart" | "periodEnd">) {
+  const verticalFilter = params.vertical ? { vertical: params.vertical as Vertical } : {};
+  const stores = await db.storeMaster.findMany({
+    where: { ...verticalFilter },
+    include: { employees: { where: { payrollStatus: "ACTIVE" }, select: { employeeId: true } } },
+  });
+  const storeCodes = stores.map((s) => s.storeCode);
+
+  const [ledger, targets, sales] = await Promise.all([
+    db.incentiveLedger.findMany({
+      where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter },
+      select: { storeCode: true, finalIncentive: true },
+    }),
+    db.target.findMany({
+      where: { storeCode: { in: storeCodes }, status: "ACTIVE", periodStart: { lte: params.periodEnd }, periodEnd: { gte: params.periodStart }, ...verticalFilter },
+      select: { storeCode: true, targetValue: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["storeCode"] as const,
+      _sum: { grossAmount: true },
+      where: { storeCode: { in: storeCodes }, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE", ...verticalFilter },
+    }),
+  ]);
+
+  const salesByStore = new Map(sales.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
+  const targetByStore = new Map<string, number>();
+  for (const t of targets) { targetByStore.set(t.storeCode, (targetByStore.get(t.storeCode) ?? 0) + asNumber(t.targetValue)); }
+  const incByStore = new Map<string, number>();
+  for (const r of ledger) { incByStore.set(r.storeCode, (incByStore.get(r.storeCode) ?? 0) + asNumber(r.finalIncentive)); }
+
+  const rows = stores.map((s) => {
+    const target = targetByStore.get(s.storeCode) ?? 0;
+    const actual = salesByStore.get(s.storeCode) ?? 0;
+    return {
+      storeCode: s.storeCode, storeName: s.storeName, vertical: s.vertical, storeFormat: s.storeFormat,
+      state: s.state, city: s.city,
+      employeeCount: s.employees.length, totalIncentive: Math.round(incByStore.get(s.storeCode) ?? 0),
+      target: Math.round(target), actual: Math.round(actual),
+      achievementPct: target > 0 ? Math.round((actual / target) * 1000) / 10 : 0,
+    };
+  }).sort((a, b) => b.totalIncentive - a.totalIncentive);
+
+  return { level: "allStores" as const, rows };
+}
+
 // ───── Level 2: Store summary ─────
 
 async function getStoreSummary(params: Params) {
