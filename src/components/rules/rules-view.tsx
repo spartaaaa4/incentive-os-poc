@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Package, ShoppingCart, Shirt, Plus, Pencil, Send, Copy, Save, X, Trash2, Wand2 } from "lucide-react";
+import { Loader2, Package, ShoppingCart, Shirt, Plus, Pencil, Send, Copy, Save, X, Trash2, Wand2, RefreshCw } from "lucide-react";
 import { formatInr } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { PlanWizard } from "./plan-wizard";
@@ -38,6 +38,7 @@ export function RulesView() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [recalculating, setRecalculating] = useState(false);
   const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
 
   const [editSlabs, setEditSlabs] = useState<Slab[]>([]);
@@ -57,6 +58,18 @@ export function RulesView() {
   }, [active]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleRecalculate = async () => {
+    setRecalculating(true);
+    try {
+      const now = new Date();
+      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      await fetch("/api/recalculate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ month }) });
+    } catch (err) {
+      console.error("Recalculate failed:", err);
+    }
+    setRecalculating(false);
+  };
 
   const cancelEdit = () => { setEditingPlanId(null); setEditSlabs([]); setEditMultipliers([]); setEditCampaign(null); setEditRoleSplits([]); };
 
@@ -179,18 +192,28 @@ export function RulesView() {
             </button>
           ))}
         </div>
-        {!showEmpty && !loading && (
-          <div className="flex gap-2">
-            <button onClick={() => setShowWizard(true)}
-              className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2 text-sm font-medium text-white hover:from-blue-700 hover:to-indigo-700 transition-colors shadow-sm">
-              <Wand2 size={14} /> Create New Plan
-            </button>
-            <button onClick={createPlan} disabled={busy}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors">
-              <Plus size={14} /> Quick Create (Defaults)
-            </button>
-          </div>
-        )}
+        <div className="flex gap-2">
+          <button
+            onClick={handleRecalculate}
+            disabled={recalculating}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors disabled:opacity-50"
+          >
+            {recalculating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            {recalculating ? "Recalculating..." : "Recalculate Incentives"}
+          </button>
+          {!showEmpty && !loading && (
+            <>
+              <button onClick={() => setShowWizard(true)}
+                className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2 text-sm font-medium text-white hover:from-blue-700 hover:to-indigo-700 transition-colors shadow-sm">
+                <Wand2 size={14} /> Create New Plan
+              </button>
+              <button onClick={createPlan} disabled={busy}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors">
+                <Plus size={14} /> Quick Create (Defaults)
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {loading && <div className="flex items-center gap-2 py-12 justify-center text-sm text-slate-500"><Loader2 size={16} className="animate-spin" /> Loading rules...</div>}

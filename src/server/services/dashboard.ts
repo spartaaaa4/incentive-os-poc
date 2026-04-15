@@ -158,11 +158,12 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     const key = format(row.transactionDate, "yyyy-MM-dd");
     dailyMap.set(key, { sales: asNumber(row._sum.grossAmount), txnCount: row._count });
   }
-  const dailySalesTrend = [...dailyMap.entries()].map(([date, v]) => ({
+  const dailySalesTrend = [...dailyMap.entries()].map(([date, v], idx) => ({
     date,
     label: format(new Date(date), "dd MMM"),
     sales: Math.round(v.sales),
     transactions: v.txnCount,
+    targetPace: Math.round(dailyTargetRate * (idx + 1)),
   }));
 
   const totalFinal = asNumber(totalIncentiveAgg._sum.finalIncentive);
@@ -175,6 +176,20 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     }
   }
   const potentialIncentive = totalFinal + potentialFromBelow;
+
+  // Total target across all stores
+  const totalTarget = [...targetByStore.values()].reduce((a, b) => a + b, 0);
+
+  // Last calculated timestamp (most recent ledger entry)
+  const lastLedgerRow = await db.incentiveLedger.findFirst({
+    where: { periodStart: { gte: monthStart }, ...verticalWhere },
+    orderBy: { calculatedAt: "desc" },
+    select: { calculatedAt: true },
+  });
+  const lastCalculatedAt = lastLedgerRow?.calculatedAt?.toISOString() ?? null;
+
+  // Daily target pace line (cumulative target up to each day)
+  const dailyTargetRate = totalTarget / daysInMonth;
 
   // Vertical breakdown (always unfiltered for the overview cards)
   const storesByVertical = new Map(verticalStores.map((v) => [v.vertical, v._count]));
@@ -236,12 +251,26 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     ? Math.round(storeAchievements.reduce((s, a) => s + a.achievementPct, 0) / storeAchievements.length)
     : 0;
 
+  // Employees earning incentive vs total
+  const earningEmployees = new Set(
+    storeLedgerAgg.length > 0
+      ? (await db.incentiveLedger.findMany({
+          where: { periodStart: { gte: monthStart }, ...verticalWhere, finalIncentive: { gt: 0 } },
+          select: { employeeId: true },
+          distinct: ["employeeId"],
+        })).map((r) => r.employeeId)
+      : [],
+  );
+
   return {
     month: format(monthStart, "yyyy-MM"),
     monthLabel: format(monthStart, "MMMM yyyy"),
+    lastCalculatedAt,
     stats: {
       totalEmployees: employeeCount,
+      employeesEarning: earningEmployees.size,
       totalSalesMtd: Math.round(asNumber(totalSalesAgg._sum.grossAmount)),
+      totalTarget: Math.round(totalTarget),
       totalIncentiveMtd: Math.round(totalFinal),
       potentialIncentive: Math.round(potentialIncentive),
       avgAchievementPct: avgAchievement,

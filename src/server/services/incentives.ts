@@ -42,21 +42,39 @@ async function getCitySummary(params: Params) {
   });
   const storeCodes = stores.map((s) => s.storeCode);
 
-  const ledger = await db.incentiveLedger.findMany({
-    where: {
-      storeCode: { in: storeCodes },
-      periodStart: { gte: params.periodStart },
-      periodEnd: { lte: params.periodEnd },
-      ...verticalFilter,
-    },
-    select: { storeCode: true, employeeId: true, finalIncentive: true, achievementPct: true },
-  });
+  const [ledger, salesAgg, totalActiveEmps] = await Promise.all([
+    db.incentiveLedger.findMany({
+      where: {
+        storeCode: { in: storeCodes },
+        periodStart: { gte: params.periodStart },
+        periodEnd: { lte: params.periodEnd },
+        ...verticalFilter,
+      },
+      select: { storeCode: true, employeeId: true, finalIncentive: true, achievementPct: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["storeCode"] as const,
+      _sum: { grossAmount: true },
+      where: { storeCode: { in: storeCodes }, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE", ...verticalFilter },
+    }),
+    db.employeeMaster.groupBy({
+      by: ["storeCode"] as const,
+      _count: true,
+      where: { payrollStatus: "ACTIVE", storeCode: { in: storeCodes } },
+    }),
+  ]);
 
-  const cityMap = new Map<string, { state: string; stores: Set<string>; employees: Set<string>; incentive: number; achSum: number; achCount: number }>();
+  const salesByStore = new Map(salesAgg.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
+  const totalEmpsByStore = new Map(totalActiveEmps.map((e) => [e.storeCode, e._count]));
+
+  const cityMap = new Map<string, { state: string; stores: Set<string>; earningEmployees: Set<string>; totalEmployees: number; incentive: number; sales: number; achSum: number; achCount: number }>();
   const storeToCityMap = new Map<string, string>();
   for (const s of stores) {
-    if (!cityMap.has(s.city)) cityMap.set(s.city, { state: s.state, stores: new Set(), employees: new Set(), incentive: 0, achSum: 0, achCount: 0 });
-    cityMap.get(s.city)!.stores.add(s.storeCode);
+    if (!cityMap.has(s.city)) cityMap.set(s.city, { state: s.state, stores: new Set(), earningEmployees: new Set(), totalEmployees: 0, incentive: 0, sales: 0, achSum: 0, achCount: 0 });
+    const bucket = cityMap.get(s.city)!;
+    bucket.stores.add(s.storeCode);
+    bucket.sales += salesByStore.get(s.storeCode) ?? 0;
+    bucket.totalEmployees += totalEmpsByStore.get(s.storeCode) ?? 0;
     storeToCityMap.set(s.storeCode, s.city);
   }
 
@@ -64,7 +82,7 @@ async function getCitySummary(params: Params) {
     const city = storeToCityMap.get(row.storeCode);
     if (!city) continue;
     const bucket = cityMap.get(city)!;
-    bucket.employees.add(row.employeeId);
+    if (asNumber(row.finalIncentive) > 0) bucket.earningEmployees.add(row.employeeId);
     bucket.incentive += asNumber(row.finalIncentive);
     if (row.achievementPct != null) { bucket.achSum += asNumber(row.achievementPct); bucket.achCount++; }
   }
@@ -73,14 +91,22 @@ async function getCitySummary(params: Params) {
     city,
     state: b.state,
     storeCount: b.stores.size,
-    employeeCount: b.employees.size,
+    employeeCount: b.earningEmployees.size,
+    totalEmployees: b.totalEmployees,
+    totalSales: Math.round(b.sales),
     totalIncentive: Math.round(b.incentive),
     avgAchievementPct: b.achCount > 0 ? Math.round((b.achSum / b.achCount) * 10) / 10 : 0,
   })).sort((a, b) => b.totalIncentive - a.totalIncentive);
 
   return {
     level: "city" as const,
-    summary: { totalIncentive: rows.reduce((s, r) => s + r.totalIncentive, 0), totalEmployees: rows.reduce((s, r) => s + r.employeeCount, 0), storeCount: rows.reduce((s, r) => s + r.storeCount, 0) },
+    summary: {
+      totalIncentive: rows.reduce((s, r) => s + r.totalIncentive, 0),
+      totalEmployees: rows.reduce((s, r) => s + r.totalEmployees, 0),
+      employeesEarning: rows.reduce((s, r) => s + r.employeeCount, 0),
+      totalSales: rows.reduce((s, r) => s + r.totalSales, 0),
+      storeCount: rows.reduce((s, r) => s + r.storeCount, 0),
+    },
     rows,
   };
 }
@@ -184,7 +210,10 @@ async function getStoreSummary(params: Params) {
 // ───── Level 3: Store detail (departments + employees) ─────
 
 async function getStoreDetail(params: Params) {
-  const store = await db.storeMaster.findUnique({ where: { storeCode: params.storeCode! } });
+  const store = await db.storeMaster.findUnique({
+    where: { storeCode: params.storeCode! },
+    include: { employees: { where: { payrollStatus: "ACTIVE" }, select: { employeeId: true } } },
+  });
   if (!store) return { level: "storeDetail" as const, summary: {}, departments: [], employees: [] };
 
   const [ledger, targets, salesAgg] = await Promise.all([
@@ -256,7 +285,7 @@ async function getStoreDetail(params: Params) {
     level: "storeDetail" as const,
     summary: {
       storeCode: store.storeCode, storeName: store.storeName, vertical: store.vertical,
-      totalIncentive, employeeCount: employees.length,
+      totalIncentive, employeeCount: employees.length, totalEmployees: store.employees.length,
     },
     departments,
     employees,
