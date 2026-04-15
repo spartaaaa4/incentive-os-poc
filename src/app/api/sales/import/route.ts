@@ -99,10 +99,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ imported: 0, errors: [(e as Error).message] }, { status: 400 });
   }
 
+  let insertResult;
   try {
-    await db.salesTransaction.createMany({ data: parsedRows, skipDuplicates: true });
+    insertResult = await db.salesTransaction.createMany({ data: parsedRows, skipDuplicates: true });
   } catch (e) {
     return NextResponse.json({ imported: 0, errors: [`Database error: ${(e as Error).message}`] }, { status: 500 });
+  }
+
+  const actuallyInserted = insertResult.count;
+  const skipped = parsedRows.length - actuallyInserted;
+
+  if (actuallyInserted === 0) {
+    return NextResponse.json({
+      imported: 0,
+      skipped,
+      errors: [`All ${skipped} row(s) were skipped — transaction IDs already exist in the database.`],
+    }, { status: 400 });
   }
 
   const sortedDates = parsedRows.map((r) => r.transactionDate).sort((a, b) => a.getTime() - b.getTime());
@@ -110,5 +122,5 @@ export async function POST(request: Request) {
     await recalculateByDateSpan(uniqueStores, sortedDates[0], sortedDates[sortedDates.length - 1]);
   }
 
-  return NextResponse.json({ imported: parsedRows.length, errors: [] });
+  return NextResponse.json({ imported: actuallyInserted, skipped, errors: [] });
 }
