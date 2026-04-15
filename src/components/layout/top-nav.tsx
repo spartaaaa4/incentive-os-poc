@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, ClipboardList, Database, Gauge, Target, Zap, User, Trophy } from "lucide-react";
+import { BarChart3, ClipboardList, Database, Gauge, Target, Zap, User, Trophy, Building2 } from "lucide-react";
 import clsx from "clsx";
 
 const navItems = [
@@ -12,6 +12,7 @@ const navItems = [
   { href: "/targets", label: "Targets", icon: Target },
   { href: "/approvals", label: "Approvals", icon: BarChart3 },
   { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
+  { href: "/reference", label: "Org reference", icon: Building2 },
   { href: "/data-model", label: "Data Model", icon: Database },
 ];
 
