@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Alert, Button, Space, Typography } from "antd";
 import { Database, Loader2 } from "lucide-react";
 
 async function checkNeedsReseed(): Promise<boolean> {
@@ -54,19 +55,42 @@ export function SeedBanner() {
   };
 
   return (
-    <div className="mx-4 mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 flex items-center justify-between">
-      <div className="flex items-center gap-3">
-        <Database size={20} className="text-amber-600" />
-        <div>
-          <p className="text-sm font-medium text-amber-900">Demo data missing or incomplete</p>
-          <p className="text-xs text-amber-700">Load/reset demo data: 15 stores, 255 employees, ~3,300 sales transactions, targets, incentive rules, and calculated ledger.</p>
-        </div>
-      </div>
-      <button onClick={() => void runSeed()} disabled={seeding}
-        className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors whitespace-nowrap">
-        {seeding ? <><Loader2 size={14} className="animate-spin" /> Seeding...</> : "Reset & Load Demo Data"}
-      </button>
-      {error && <p className="mt-2 text-xs text-red-600 max-w-xl break-words">{error}</p>}
+    <div style={{ marginTop: 16 }}>
+      <Alert
+        type="warning"
+        showIcon
+        icon={<Database size={20} />}
+        message={<Typography.Text strong>Demo data missing or incomplete</Typography.Text>}
+        description={
+          <Space direction="vertical" size="small" style={{ width: "100%" }}>
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              Load/reset demo data: 15 stores, 255 employees, ~3,300 sales transactions, targets, incentive rules, and calculated ledger.
+            </Typography.Text>
+            {error && (
+              <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                {error}
+              </Typography.Text>
+            )}
+          </Space>
+        }
+        action={
+          <Button
+            type="default"
+            onClick={() => void runSeed()}
+            disabled={seeding}
+            style={{ background: "#d97706", borderColor: "#b45309", color: "#fff" }}
+          >
+            {seeding ? (
+              <Space size="small">
+                <Loader2 size={14} className="animate-spin" />
+                Seeding…
+              </Space>
+            ) : (
+              "Reset & Load Demo Data"
+            )}
+          </Button>
+        }
+      />
     </div>
   );
 }

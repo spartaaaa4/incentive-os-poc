@@ -1,13 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { format, subMonths, startOfMonth } from "date-fns";
-import { Loader2, Trophy, MapPin, Calendar, ChevronRight, Store, Filter } from "lucide-react";
+import { Trophy, MapPin, Calendar, ChevronRight, Store, Filter } from "lucide-react";
+import {
+  Alert,
+  Breadcrumb,
+  Button,
+  Card,
+  Empty,
+  Flex,
+  Select,
+  Space,
+  Spin,
+  Table,
+  Tag,
+  Typography,
+} from "antd";
+import type { ColumnsType } from "antd/es/table";
 import { formatInr, formatNumber } from "@/lib/format";
-
-/* ------------------------------------------------------------------ */
-/*  Types                                                             */
-/* ------------------------------------------------------------------ */
 
 type StoreInfo = {
   storeCode: string;
@@ -27,7 +38,7 @@ type LeaderboardPeriod = {
   description: string;
 };
 
-type LeaderboardRow = {
+type AdminLeaderboardRow = {
   rank: number;
   employeeId: string;
   employeeName: string;
@@ -37,7 +48,6 @@ type LeaderboardRow = {
   city: string;
   totalSales: number;
   transactionCount: number;
-  isViewer?: boolean;
 };
 
 type AdminLeaderboardResponse = {
@@ -49,7 +59,7 @@ type AdminLeaderboardResponse = {
   storeCode: string | null;
   storeName: string | null;
   period: LeaderboardPeriod;
-  leaderboard: LeaderboardRow[];
+  leaderboard: AdminLeaderboardRow[];
 };
 
 const verticalLabels: Record<string, string> = {
@@ -58,10 +68,10 @@ const verticalLabels: Record<string, string> = {
   FNL: "Fashion & Lifestyle",
 };
 
-const verticalColors: Record<string, { bg: string; border: string; text: string; dot: string }> = {
-  ELECTRONICS: { bg: "bg-blue-50", border: "border-blue-200", text: "text-blue-800", dot: "bg-blue-500" },
-  GROCERY: { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-800", dot: "bg-emerald-500" },
-  FNL: { bg: "bg-purple-50", border: "border-purple-200", text: "text-purple-800", dot: "bg-purple-500" },
+const verticalTagColor: Record<string, string> = {
+  ELECTRONICS: "blue",
+  GROCERY: "green",
+  FNL: "purple",
 };
 
 function rollingMonthOptions(count: number): { value: string; label: string }[] {
@@ -72,40 +82,102 @@ function rollingMonthOptions(count: number): { value: string; label: string }[] 
   });
 }
 
-/* ------------------------------------------------------------------ */
-/*  Rank badge                                                        */
-/* ------------------------------------------------------------------ */
-
 function RankBadge({ rank }: { rank: number }) {
-  if (rank === 1) return <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-amber-100 text-amber-700 font-bold text-sm">🥇</span>;
-  if (rank === 2) return <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-600 font-bold text-sm">🥈</span>;
-  if (rank === 3) return <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-orange-100 text-orange-700 font-bold text-sm">🥉</span>;
-  return <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-50 text-slate-500 font-mono text-sm">{rank}</span>;
+  if (rank === 1) {
+    return (
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          borderRadius: "50%",
+          background: "#fef3c7",
+          color: "#b45309",
+          fontWeight: 700,
+          fontSize: 14,
+        }}
+      >
+        🥇
+      </span>
+    );
+  }
+  if (rank === 2) {
+    return (
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          borderRadius: "50%",
+          background: "#f1f5f9",
+          color: "#475569",
+          fontWeight: 700,
+          fontSize: 14,
+        }}
+      >
+        🥈
+      </span>
+    );
+  }
+  if (rank === 3) {
+    return (
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          borderRadius: "50%",
+          background: "#ffedd5",
+          color: "#c2410c",
+          fontWeight: 700,
+          fontSize: 14,
+        }}
+      >
+        🥉
+      </span>
+    );
+  }
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 28,
+        height: 28,
+        borderRadius: "50%",
+        background: "#f8fafc",
+        color: "#64748b",
+        fontFamily: "monospace",
+        fontSize: 13,
+      }}
+    >
+      {rank}
+    </span>
+  );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Main component                                                    */
-/* ------------------------------------------------------------------ */
 
 export function LeaderboardView() {
   const monthOptions = useMemo(() => rollingMonthOptions(18), []);
 
-  // Store metadata
   const [stores, setStores] = useState<StoreInfo[]>([]);
   const [storesLoading, setStoresLoading] = useState(true);
 
-  // Filters
   const [selectedVertical, setSelectedVertical] = useState<string>("");
   const [selectedCity, setSelectedCity] = useState<string>("");
   const [selectedStore, setSelectedStore] = useState<string>("");
   const [month, setMonth] = useState(() => format(startOfMonth(new Date()), "yyyy-MM"));
 
-  // Leaderboard data
   const [data, setData] = useState<AdminLeaderboardResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Load stores on mount
   useEffect(() => {
     fetch("/api/stores")
       .then((r) => (r.ok ? r.json() : { stores: [] }))
@@ -116,7 +188,6 @@ export function LeaderboardView() {
       .catch(() => setStoresLoading(false));
   }, []);
 
-  // Derived filter options
   const verticals = useMemo(() => {
     const set = new Set(stores.map((s) => s.vertical));
     return ["ELECTRONICS", "GROCERY", "FNL"].filter((v) => set.has(v));
@@ -135,7 +206,6 @@ export function LeaderboardView() {
       .sort((a, b) => a.storeName.localeCompare(b.storeName));
   }, [stores, selectedVertical, selectedCity]);
 
-  // Reset dependent selections when parent changes
   const handleVerticalChange = (v: string) => {
     setSelectedVertical(v);
     setSelectedCity("");
@@ -153,7 +223,6 @@ export function LeaderboardView() {
     setSelectedStore(s);
   };
 
-  // Load leaderboard
   const loadLeaderboard = useCallback(async () => {
     if (!selectedVertical || !selectedCity) return;
     setLoading(true);
@@ -177,7 +246,6 @@ export function LeaderboardView() {
     }
   }, [selectedVertical, selectedCity, selectedStore, month]);
 
-  // Auto-load when filters change (only if vertical+city are set)
   useEffect(() => {
     if (selectedVertical && selectedCity) {
       void loadLeaderboard();
@@ -187,276 +255,297 @@ export function LeaderboardView() {
   const setThisMonth = () => setMonth(format(startOfMonth(new Date()), "yyyy-MM"));
   const setLastMonth = () => setMonth(format(startOfMonth(subMonths(new Date(), 1)), "yyyy-MM"));
 
-  const vc = selectedVertical ? verticalColors[selectedVertical] : null;
+  const breadcrumbItems = useMemo(() => {
+    const items: { title: ReactNode }[] = [
+      {
+        title: (
+          <Space size={6}>
+            <Trophy size={14} style={{ color: "#d97706" }} />
+            <span>Leaderboard</span>
+          </Space>
+        ),
+      },
+    ];
+    if (selectedVertical) {
+      items.push({
+        title: (
+          <Tag color={verticalTagColor[selectedVertical]} style={{ margin: 0 }}>
+            {verticalLabels[selectedVertical]}
+          </Tag>
+        ),
+      });
+    }
+    if (selectedCity) {
+      items.push({ title: selectedCity });
+    }
+    if (selectedStore && data?.storeName) {
+      items.push({ title: data.storeName });
+    }
+    return items;
+  }, [selectedVertical, selectedCity, selectedStore, data?.storeName]);
+
+  const tableColumns: ColumnsType<AdminLeaderboardRow> = useMemo(() => {
+    const cols: ColumnsType<AdminLeaderboardRow> = [
+      {
+        title: "Rank",
+        dataIndex: "rank",
+        width: 80,
+        render: (rank: number) => <RankBadge rank={rank} />,
+      },
+      {
+        title: "Employee",
+        key: "employee",
+        render: (_, row) => (
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{row.employeeName}</Typography.Text>
+            <Typography.Text type="secondary" code style={{ fontSize: 12 }}>
+              {row.employeeId}
+            </Typography.Text>
+          </Space>
+        ),
+      },
+      { title: "Role", dataIndex: "role" },
+    ];
+    if (data?.scope === "city") {
+      cols.push({
+        title: "Store",
+        key: "store",
+        render: (_, row) => (
+          <Space direction="vertical" size={0}>
+            <Typography.Text style={{ fontSize: 12 }}>{row.storeName}</Typography.Text>
+            <Typography.Text type="secondary" code style={{ fontSize: 11 }}>
+              {row.storeCode}
+            </Typography.Text>
+          </Space>
+        ),
+      });
+    }
+    cols.push(
+      {
+        title: "Transactions",
+        dataIndex: "transactionCount",
+        align: "right",
+        width: 120,
+        render: (v: number) => formatNumber(v),
+      },
+      {
+        title: "Total sales (gross)",
+        dataIndex: "totalSales",
+        align: "right",
+        width: 168,
+        render: (v: number) => <Typography.Text strong>{formatInr(v)}</Typography.Text>,
+      },
+    );
+    return cols;
+  }, [data?.scope]);
+
+  const totals = useMemo(() => {
+    if (!data?.leaderboard.length) return { sales: 0, tx: 0 };
+    return data.leaderboard.reduce(
+      (acc, r) => {
+        acc.sales += r.totalSales;
+        acc.tx += r.transactionCount;
+        return acc;
+      },
+      { sales: 0, tx: 0 },
+    );
+  }, [data]);
 
   return (
-    <div className="space-y-6">
-      {/* ── Breadcrumb ── */}
-      <div className="flex items-center gap-1.5 text-sm text-slate-500">
-        <Trophy size={14} className="text-amber-500" />
-        <span className="font-medium text-slate-700">Leaderboard</span>
-        {selectedVertical && (
-          <>
-            <ChevronRight size={14} />
-            <span className={vc?.text}>{verticalLabels[selectedVertical]}</span>
-          </>
-        )}
-        {selectedCity && (
-          <>
-            <ChevronRight size={14} />
-            <span className="text-slate-700">{selectedCity}</span>
-          </>
-        )}
-        {selectedStore && data?.storeName && (
-          <>
-            <ChevronRight size={14} />
-            <span className="text-slate-700">{data.storeName}</span>
-          </>
-        )}
-      </div>
+    <Space direction="vertical" size="large" style={{ width: "100%" }}>
+      <Breadcrumb separator={<ChevronRight size={12} />} items={breadcrumbItems} />
 
-      {/* ── Filter bar ── */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex items-center gap-2 mb-3">
-          <Filter size={14} className="text-slate-400" />
-          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Filters</span>
-        </div>
-
+      <Card size="small" title={<Space><Filter size={14} /><Typography.Text strong>Filters</Typography.Text></Space>}>
         {storesLoading ? (
-          <div className="flex items-center gap-2 text-sm text-slate-400 py-2">
-            <Loader2 className="animate-spin" size={14} /> Loading stores…
-          </div>
+          <Flex align="center" gap="small">
+            <Spin size="small" />
+            <Typography.Text type="secondary">Loading stores…</Typography.Text>
+          </Flex>
         ) : (
-          <div className="flex flex-wrap items-end gap-4">
-            {/* Vertical */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-600">Vertical</label>
-              <div className="flex gap-1.5">
+          <Flex wrap="wrap" gap="large" align="flex-end">
+            <Space direction="vertical" size={6}>
+              <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 500 }}>
+                Vertical
+              </Typography.Text>
+              <Space wrap>
                 {verticals.map((v) => {
-                  const c = verticalColors[v];
                   const active = selectedVertical === v;
                   return (
-                    <button
+                    <Button
                       key={v}
-                      type="button"
+                      type={active ? "primary" : "default"}
                       onClick={() => handleVerticalChange(v)}
-                      className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
-                        active
-                          ? `${c?.bg} ${c?.border} ${c?.text} shadow-sm`
-                          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                      }`}
                     >
-                      <span className={`w-2 h-2 rounded-full ${active ? c?.dot : "bg-slate-300"}`} />
                       {verticalLabels[v]}
-                    </button>
+                    </Button>
                   );
                 })}
-              </div>
-            </div>
+              </Space>
+            </Space>
 
-            {/* City */}
-            {selectedVertical && (
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-slate-600 flex items-center gap-1">
-                  <MapPin size={11} /> City
-                </label>
-                <select
-                  value={selectedCity}
-                  onChange={(e) => handleCityChange(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm min-w-[160px] focus:border-blue-400 focus:ring-1 focus:ring-blue-200 outline-none"
-                >
-                  <option value="">Select city…</option>
-                  {cities.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-              </div>
-            )}
+            {selectedVertical ? (
+              <Space direction="vertical" size={6}>
+                <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 500 }}>
+                  <MapPin size={12} style={{ marginRight: 4, verticalAlign: "middle" }} />
+                  City
+                </Typography.Text>
+                <Select
+                  style={{ minWidth: 200 }}
+                  placeholder="Select city…"
+                  value={selectedCity || undefined}
+                  onChange={(v) => handleCityChange(v ?? "")}
+                  options={cities.map((c) => ({ value: c, label: c }))}
+                  allowClear
+                />
+              </Space>
+            ) : null}
 
-            {/* Store (optional drill-down) */}
-            {selectedCity && cityStores.length > 0 && (
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-slate-600 flex items-center gap-1">
-                  <Store size={11} /> Store <span className="text-slate-400 font-normal">(optional)</span>
-                </label>
-                <select
-                  value={selectedStore}
-                  onChange={(e) => handleStoreChange(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm min-w-[200px] focus:border-blue-400 focus:ring-1 focus:ring-blue-200 outline-none"
-                >
-                  <option value="">All stores in {selectedCity}</option>
-                  {cityStores.map((s) => (
-                    <option key={s.storeCode} value={s.storeCode}>
-                      {s.storeName} ({s.storeCode})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+            {selectedCity && cityStores.length > 0 ? (
+              <Space direction="vertical" size={6}>
+                <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 500 }}>
+                  <Store size={12} style={{ marginRight: 4, verticalAlign: "middle" }} />
+                  Store <Typography.Text type="secondary">(optional)</Typography.Text>
+                </Typography.Text>
+                <Select
+                  style={{ minWidth: 240 }}
+                  placeholder={`All stores in ${selectedCity}`}
+                  value={selectedStore || undefined}
+                  onChange={(v) => handleStoreChange(v ?? "")}
+                  allowClear
+                  options={cityStores.map((s) => ({
+                    value: s.storeCode,
+                    label: `${s.storeName} (${s.storeCode})`,
+                  }))}
+                />
+              </Space>
+            ) : null}
 
-            {/* Divider */}
-            {selectedCity && <div className="hidden sm:block w-px h-10 bg-slate-200" />}
-
-            {/* Month */}
-            {selectedCity && (
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-slate-600 flex items-center gap-1">
-                  <Calendar size={11} /> Period
-                </label>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={setThisMonth}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                  >
+            {selectedCity ? (
+              <Space direction="vertical" size={6}>
+                <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 500 }}>
+                  <Calendar size={12} style={{ marginRight: 4, verticalAlign: "middle" }} />
+                  Period
+                </Typography.Text>
+                <Space wrap>
+                  <Button size="small" onClick={setThisMonth}>
                     This month
-                  </button>
-                  <button
-                    type="button"
-                    onClick={setLastMonth}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                  >
+                  </Button>
+                  <Button size="small" onClick={setLastMonth}>
                     Last month
-                  </button>
-                  <select
+                  </Button>
+                  <Select
+                    style={{ minWidth: 160 }}
                     value={month}
-                    onChange={(e) => setMonth(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-200 outline-none"
-                  >
-                    {monthOptions.map((m) => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            )}
-          </div>
+                    onChange={setMonth}
+                    options={monthOptions.map((m) => ({ value: m.value, label: m.label }))}
+                  />
+                </Space>
+              </Space>
+            ) : null}
+          </Flex>
         )}
-      </div>
+      </Card>
 
-      {/* ── Empty state ── */}
-      {!selectedVertical && !loading && (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/50 px-6 py-12 text-center">
-          <Trophy size={36} className="mx-auto text-slate-300 mb-3" />
-          <p className="text-sm font-medium text-slate-500">Select a vertical to get started</p>
-          <p className="text-xs text-slate-400 mt-1">Then pick a city to see the sales leaderboard</p>
-        </div>
-      )}
+      {!selectedVertical && !loading ? (
+        <Card>
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              <Space direction="vertical" size={4}>
+                <Typography.Text type="secondary">Select a vertical to get started</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Then pick a city to see the sales leaderboard
+                </Typography.Text>
+              </Space>
+            }
+          />
+        </Card>
+      ) : null}
 
-      {selectedVertical && !selectedCity && !loading && (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/50 px-6 py-12 text-center">
-          <MapPin size={36} className="mx-auto text-slate-300 mb-3" />
-          <p className="text-sm font-medium text-slate-500">Select a city</p>
-          <p className="text-xs text-slate-400 mt-1">
-            {cities.length} {cities.length === 1 ? "city" : "cities"} with {verticalLabels[selectedVertical]} stores
-          </p>
-        </div>
-      )}
+      {selectedVertical && !selectedCity && !loading ? (
+        <Card>
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              <Space direction="vertical" size={4}>
+                <Typography.Text type="secondary">Select a city</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {cities.length} {cities.length === 1 ? "city" : "cities"} with {verticalLabels[selectedVertical]} stores
+                </Typography.Text>
+              </Space>
+            }
+          />
+        </Card>
+      ) : null}
 
-      {/* ── Loading ── */}
-      {loading && (
-        <div className="flex items-center gap-2 text-sm text-slate-500 py-10 justify-center">
-          <Loader2 className="animate-spin" size={18} /> Loading leaderboard…
-        </div>
-      )}
+      <Spin spinning={loading} tip="Loading leaderboard…">
+        <Space direction="vertical" size="middle" style={{ width: "100%", minHeight: 80 }}>
+          {loadError ? <Alert type="error" message={loadError} /> : null}
 
-      {/* ── Error ── */}
-      {loadError && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{loadError}</div>
-      )}
+          {data && !loading ? (
+            <>
+              <Card size="small">
+                <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                  <Space wrap align="center">
+                    <Trophy size={16} style={{ color: "#d97706" }} />
+                    <Typography.Text strong>
+                      {data.scope === "store"
+                        ? `Store leaderboard — ${data.storeName} (${data.storeCode})`
+                        : `City leaderboard — ${data.city}`}
+                    </Typography.Text>
+                    <Typography.Text type="secondary">·</Typography.Text>
+                    <Tag color={verticalTagColor[data.vertical]} style={{ margin: 0 }}>
+                      {verticalLabels[data.vertical] ?? data.vertical}
+                    </Tag>
+                    <Typography.Text type="secondary">·</Typography.Text>
+                    <Typography.Text strong>{data.period.label}</Typography.Text>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      ({data.period.startDate} → {data.period.endDate})
+                    </Typography.Text>
+                  </Space>
+                  <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+                    {data.period.description}
+                  </Typography.Paragraph>
+                  <Space wrap size="large" style={{ fontSize: 12 }}>
+                    <Typography.Text>
+                      <Typography.Text strong>{data.leaderboard.length}</Typography.Text> employees
+                    </Typography.Text>
+                    <Typography.Text>
+                      <Typography.Text strong>{formatInr(totals.sales)}</Typography.Text> total sales
+                    </Typography.Text>
+                    <Typography.Text>
+                      <Typography.Text strong>{formatNumber(totals.tx)}</Typography.Text> transactions
+                    </Typography.Text>
+                  </Space>
+                </Space>
+              </Card>
 
-      {/* ── Results ── */}
-      {data && !loading && (
-        <>
-          {/* Summary bar */}
-          <div className={`rounded-xl border ${vc?.border ?? "border-blue-100"} ${vc?.bg ?? "bg-blue-50/60"} px-4 py-3 space-y-1`}>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-slate-800">
-              <Trophy size={16} className="text-amber-500 shrink-0" />
-              <span className="font-semibold">
-                {data.scope === "store"
-                  ? `Store leaderboard — ${data.storeName} (${data.storeCode})`
-                  : `City leaderboard — ${data.city}`}
-              </span>
-              <span className="text-slate-400">·</span>
-              <span className={vc?.text}>{verticalLabels[data.vertical] ?? data.vertical}</span>
-              <span className="text-slate-400">·</span>
-              <span className="font-medium">{data.period.label}</span>
-              <span className="text-slate-400 text-xs">
-                ({data.period.startDate} → {data.period.endDate})
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-4 text-xs text-slate-600 mt-1">
-              <span><strong>{data.leaderboard.length}</strong> employees</span>
-              <span>
-                <strong>{formatInr(data.leaderboard.reduce((s, r) => s + r.totalSales, 0))}</strong> total sales
-              </span>
-              <span>
-                <strong>{formatNumber(data.leaderboard.reduce((s, r) => s + r.transactionCount, 0))}</strong> transactions
-              </span>
-            </div>
-          </div>
+              <Table<AdminLeaderboardRow>
+                rowKey="employeeId"
+                size="small"
+                scroll={{ x: "max-content" }}
+                columns={tableColumns}
+                dataSource={data.leaderboard}
+                pagination={false}
+                locale={{
+                  emptyText: (
+                    <Typography.Text type="secondary">No sales data for this period</Typography.Text>
+                  ),
+                }}
+              />
 
-          {/* Table */}
-          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3 w-16">Rank</th>
-                  <th className="px-4 py-3">Employee</th>
-                  <th className="px-4 py-3">Role</th>
-                  {data.scope === "city" && <th className="px-4 py-3">Store</th>}
-                  <th className="px-4 py-3 text-right">Transactions</th>
-                  <th className="px-4 py-3 text-right">Total sales (gross)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {data.leaderboard.length === 0 && (
-                  <tr>
-                    <td colSpan={data.scope === "city" ? 6 : 5} className="px-4 py-8 text-center text-slate-400">
-                      No sales data for this period
-                    </td>
-                  </tr>
-                )}
-                {data.leaderboard.map((row) => (
-                  <tr key={row.employeeId} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-4 py-2.5">
-                      <RankBadge rank={row.rank} />
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="font-medium text-slate-900">{row.employeeName}</div>
-                      <div className="text-xs text-slate-400 font-mono">{row.employeeId}</div>
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-600">{row.role}</td>
-                    {data.scope === "city" && (
-                      <td className="px-4 py-2.5 text-slate-600">
-                        <div className="text-xs">{row.storeName}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">{row.storeCode}</div>
-                      </td>
-                    )}
-                    <td className="px-4 py-2.5 text-right tabular-nums text-slate-600">
-                      {formatNumber(row.transactionCount)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-slate-900">
-                      {formatInr(row.totalSales)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* API note */}
-          <p className="text-xs text-slate-500 max-w-3xl">
-            <strong>API:</strong>{" "}
-            <code className="bg-slate-100 px-1 rounded">
-              GET /api/leaderboard?vertical=ELECTRONICS&amp;city=Bijapur&amp;month=yyyy-MM
-            </code>
-            {" "}Add{" "}
-            <code className="bg-slate-100 px-1 rounded">storeCode=3675</code>
-            {" "}to drill into a specific store.
-          </p>
-        </>
-      )}
-    </div>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+                <Typography.Text strong>API:</Typography.Text>{" "}
+                <Typography.Text code>
+                  GET /api/leaderboard?vertical=ELECTRONICS&amp;city=Bijapur&amp;month=yyyy-MM
+                </Typography.Text>
+                {" "}
+                Add <Typography.Text code>storeCode=3675</Typography.Text> to drill into a specific store.
+              </Typography.Paragraph>
+            </>
+          ) : null}
+        </Space>
+      </Spin>
+    </Space>
   );
 }
