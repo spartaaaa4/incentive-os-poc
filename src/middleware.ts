@@ -11,6 +11,9 @@ const PUBLIC_ROUTES = [
   "/api/approvals",
   "/api/targets",
   "/api/rules",
+  "/api/employees",
+  "/api/stores",
+  "/api/recalculate",
 ];
 
 const INTERNAL_ROUTES = [
