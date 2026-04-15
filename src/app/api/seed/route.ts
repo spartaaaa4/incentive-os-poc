@@ -471,7 +471,9 @@ export async function POST(request: Request) {
 
       for (const [dept, desiredPct] of Object.entries(profile)) {
         const deptTarget = deptTargetTotals.get(dept) ?? 0;
-        const desiredSales = Math.round(deptTarget * desiredPct);
+        // Compensate for ~8% non-NORMAL + ~7% ONLINE transactions excluded from achievement
+        // Only NORMAL+OFFLINE count, so we need to generate ~18% more total volume
+        const desiredSales = Math.round(deptTarget * desiredPct * 1.18);
         const families = deptFamilies.get(dept) ?? [];
         const familyDefs = electronicsFamilies.filter((f) => families.some((ft) => ft.code === f.code));
         if (!familyDefs.length) continue;
@@ -482,7 +484,7 @@ export async function POST(request: Request) {
         let cumSales = 0;
         let txCount = 0;
 
-        while (cumSales < desiredSales && txCount < 800) {
+        while (cumSales < desiredSales && txCount < 1000) {
           const family = familyDefs[Math.floor(rand() * familyDefs.length)];
           const qty = rand() > 0.82 ? 2 : 1;
           const unitPrice = Math.round(family.min + rand() * (family.max - family.min));
