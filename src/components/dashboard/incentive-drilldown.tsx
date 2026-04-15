@@ -300,9 +300,9 @@ function StoreDetailView({ data, onDrill }: { data: Record<string, unknown>; onD
           <thead className="bg-slate-50 text-slate-600"><tr>
             <th className="p-3 text-left">Employee</th>
             <th className="p-3 text-left">Role</th>
-            <SortHeader label="Base Incentive" active={sortKey === "baseIncentive"} dir={sortKey === "baseIncentive" ? sortDir : null} onClick={() => toggle("baseIncentive")} className="text-right" />
+            <SortHeader label="Eligible Incentive" active={sortKey === "baseIncentive"} dir={sortKey === "baseIncentive" ? sortDir : null} onClick={() => toggle("baseIncentive")} className="text-right" />
             <SortHeader label="Multiplier" active={sortKey === "multiplierPct"} dir={sortKey === "multiplierPct" ? sortDir : null} onClick={() => toggle("multiplierPct")} className="text-right" />
-            <SortHeader label="Final Incentive" active={sortKey === "finalIncentive"} dir={sortKey === "finalIncentive" ? sortDir : null} onClick={() => toggle("finalIncentive")} className="text-right" />
+            <SortHeader label="Earned Incentive" active={sortKey === "finalIncentive"} dir={sortKey === "finalIncentive" ? sortDir : null} onClick={() => toggle("finalIncentive")} className="text-right" />
             <th className="p-3 w-6"></th>
           </tr></thead>
           <tbody>
