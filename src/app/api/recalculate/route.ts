@@ -24,7 +24,11 @@ async function runRecalculate(storeCode: string | null, month: string | null) {
   await recalculateIncentives({ storeCodes, periodStart, periodEnd });
 
   const ledgerCount = await db.incentiveLedger.count({
-    where: { periodStart: { gte: periodStart }, periodEnd: { lte: periodEnd } },
+    where: {
+      storeCode: { in: storeCodes },
+      periodStart: { gte: periodStart },
+      periodEnd: { lte: periodEnd },
+    },
   });
 
   return {
