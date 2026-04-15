@@ -147,8 +147,14 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     count: storeAchievements.filter((s) => s.achievementPct >= b.min && s.achievementPct < b.max).length,
   }));
 
-  // Daily sales trend
+  // Total target across all stores (needed for daily pace line)
+  const totalTarget = [...targetByStore.values()].reduce((a, b) => a + b, 0);
+
+  // Daily target pace line (cumulative target up to each day)
   const daysInMonth = differenceInDays(monthEnd, monthStart) + 1;
+  const dailyTargetRate = totalTarget / daysInMonth;
+
+  // Daily sales trend
   const dailyMap = new Map<string, { sales: number; txnCount: number }>();
   for (let i = 0; i < daysInMonth; i++) {
     const d = format(addDays(monthStart, i), "yyyy-MM-dd");
@@ -177,9 +183,6 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
   }
   const potentialIncentive = totalFinal + potentialFromBelow;
 
-  // Total target across all stores
-  const totalTarget = [...targetByStore.values()].reduce((a, b) => a + b, 0);
-
   // Last calculated timestamp (most recent ledger entry)
   const lastLedgerRow = await db.incentiveLedger.findFirst({
     where: { periodStart: { gte: monthStart }, ...verticalWhere },
@@ -187,9 +190,6 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     select: { calculatedAt: true },
   });
   const lastCalculatedAt = lastLedgerRow?.calculatedAt?.toISOString() ?? null;
-
-  // Daily target pace line (cumulative target up to each day)
-  const dailyTargetRate = totalTarget / daysInMonth;
 
   // Vertical breakdown (always unfiltered for the overview cards)
   const storesByVertical = new Map(verticalStores.map((v) => [v.vertical, v._count]));
