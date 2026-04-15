@@ -34,9 +34,11 @@ const navItems: Array<{ href: string; label: string; icon: React.ReactNode }> = 
 
 export function AdminChrome({
   title,
+  description,
   children,
 }: {
   title: string;
+  description?: string;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -126,6 +128,11 @@ export function AdminChrome({
           <Typography.Title level={4} style={{ margin: 0 }}>
             {title}
           </Typography.Title>
+          {description ? (
+            <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, maxWidth: 900 }}>
+              {description}
+            </Typography.Paragraph>
+          ) : null}
         </div>
         <div style={{ paddingInline: 24 }}>
           <SeedBanner />
