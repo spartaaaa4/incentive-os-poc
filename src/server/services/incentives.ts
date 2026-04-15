@@ -459,9 +459,10 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
   const actualSales = asNumber(details.actualSales);
   const targetValue = asNumber(details.targetValue);
   const exceeded = actualSales > targetValue;
-  const storePool = exceeded ? Math.round(actualSales * 0.01) : 0;
-
   const plan = latestRow.plan;
+  const planConfig = (plan.config ?? {}) as Record<string, unknown>;
+  const poolPct = asNumber(planConfig.poolPct ?? 1) / 100;
+  const storePool = exceeded ? Math.round(actualSales * poolPct) : 0;
   const storeEmployees = await db.employeeMaster.findMany({ where: { storeCode: employee.storeCode, payrollStatus: "ACTIVE" } });
   const smCount = storeEmployees.filter((e: { role: string }) => e.role === "SM").length;
   const dmCount = storeEmployees.filter((e: { role: string }) => e.role === "DM").length;

@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Package, ShoppingCart, Shirt, Plus, Pencil, Send, Copy, Save, X, Trash2 } from "lucide-react";
+import { Loader2, Package, ShoppingCart, Shirt, Plus, Pencil, Send, Copy, Save, X, Trash2, Wand2 } from "lucide-react";
 import { formatInr } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { PlanWizard } from "./plan-wizard";
 
 type Plan = {
   id: number;
@@ -44,6 +45,7 @@ export function RulesView() {
   const [editConfig, setEditConfig] = useState<Record<string, unknown>>({});
   const [editRoleSplits, setEditRoleSplits] = useState<RoleSplit[]>([]);
   const [editCampaign, setEditCampaign] = useState<Campaign | null>(null);
+  const [showWizard, setShowWizard] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -178,10 +180,16 @@ export function RulesView() {
           ))}
         </div>
         {!showEmpty && !loading && (
-          <button onClick={createPlan} disabled={busy}
-            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
-            <Plus size={14} /> Create New Plan
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => setShowWizard(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2 text-sm font-medium text-white hover:from-blue-700 hover:to-indigo-700 transition-colors shadow-sm">
+              <Wand2 size={14} /> Create New Plan
+            </button>
+            <button onClick={createPlan} disabled={busy}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors">
+              <Plus size={14} /> Quick Create (Defaults)
+            </button>
+          </div>
         )}
       </div>
 
@@ -191,10 +199,15 @@ export function RulesView() {
         <div className="rounded-xl border border-slate-200 bg-white p-8 text-center">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">{tabIcons[active]}</div>
           <h3 className="text-base font-semibold text-slate-900 mb-2">No {active} plan configured</h3>
-          <p className="text-sm text-slate-500 max-w-md mx-auto mb-6">Create a new incentive plan with pre-loaded defaults from the Reliance vendor brief.</p>
-          <button onClick={createPlan} disabled={busy} className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
-            <Plus size={14} className="inline mr-1" /> Create {active} Plan
-          </button>
+          <p className="text-sm text-slate-500 max-w-md mx-auto mb-6">Create a new incentive plan using the guided wizard or quick-create with pre-loaded defaults.</p>
+          <div className="flex justify-center gap-3">
+            <button onClick={() => setShowWizard(true)} className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-5 py-2.5 text-sm font-medium text-white hover:from-blue-700 hover:to-indigo-700 transition-colors shadow-sm">
+              <Wand2 size={14} className="inline mr-1" /> Create with Wizard
+            </button>
+            <button onClick={createPlan} disabled={busy} className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+              <Plus size={14} className="inline mr-1" /> Quick Create
+            </button>
+          </div>
         </div>
       )}
 
@@ -411,6 +424,12 @@ export function RulesView() {
             </table>
           </div>
         </div>
+      )}
+      {showWizard && (
+        <PlanWizard
+          onClose={() => setShowWizard(false)}
+          onCreated={() => { setShowWizard(false); load(); }}
+        />
       )}
     </div>
   );

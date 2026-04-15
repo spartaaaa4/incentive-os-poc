@@ -1,4 +1,4 @@
-import { startOfMonth, format, addDays, differenceInDays } from "date-fns";
+import { startOfMonth, endOfMonth, format, addDays, differenceInDays } from "date-fns";
 import { Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
 
@@ -10,9 +10,10 @@ function asNumber(value: unknown): number {
   return Number(value ?? 0);
 }
 
-export async function getDashboardData(vertical?: Vertical) {
-  const monthStart = startOfMonth(new Date("2026-04-13"));
-  const monthEnd = new Date("2026-04-30");
+export async function getDashboardData(vertical?: Vertical, month?: string) {
+  const anchor = month ? new Date(month + "-15") : new Date("2026-04-13");
+  const monthStart = startOfMonth(anchor);
+  const monthEnd = endOfMonth(anchor);
   const verticalWhere = vertical ? { vertical } : {};
 
   const [
@@ -236,6 +237,8 @@ export async function getDashboardData(vertical?: Vertical) {
     : 0;
 
   return {
+    month: format(monthStart, "yyyy-MM"),
+    monthLabel: format(monthStart, "MMMM yyyy"),
     stats: {
       totalEmployees: employeeCount,
       totalSalesMtd: Math.round(asNumber(totalSalesAgg._sum.grossAmount)),

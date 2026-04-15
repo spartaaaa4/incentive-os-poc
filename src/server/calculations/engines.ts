@@ -368,7 +368,9 @@ async function calculateFnL(input: RecalculateInput) {
       continue;
     }
 
-    const storeIncentive = actualSales * 0.01;
+    const planConfig = (plan.config ?? {}) as Record<string, unknown>;
+    const poolPct = asNumber(planConfig.poolPct ?? 1) / 100;
+    const storeIncentive = actualSales * poolPct;
     const allEmployees = await db.employeeMaster.findMany({
       where: { storeCode: target.storeCode },
     });

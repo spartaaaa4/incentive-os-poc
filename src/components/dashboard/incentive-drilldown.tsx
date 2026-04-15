@@ -6,15 +6,24 @@ import { formatInr, formatNumber } from "@/lib/format";
 
 type Breadcrumb = { label: string; params: Record<string, string> };
 
-export function IncentiveDrilldown({ vertical }: { vertical: string }) {
+export function IncentiveDrilldown({ vertical, month }: { vertical: string; month?: string }) {
   const [params, setParams] = useState<Record<string, string>>({});
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [crumbs, setCrumbs] = useState<Breadcrumb[]>([{ label: "All Cities", params: {} }]);
 
-  const load = useCallback((p: Record<string, string>, v: string) => {
+  const load = useCallback((p: Record<string, string>, v: string, m?: string) => {
     setLoading(true);
-    const qs = new URLSearchParams({ ...p, ...(v ? { vertical: v } : {}) }).toString();
+    const extra: Record<string, string> = {};
+    if (v) extra.vertical = v;
+    if (m) {
+      const anchor = new Date(m + "-15");
+      const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+      const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+      extra.periodStart = start.toISOString().slice(0, 10);
+      extra.periodEnd = end.toISOString().slice(0, 10);
+    }
+    const qs = new URLSearchParams({ ...p, ...extra }).toString();
     fetch(`/api/incentives?${qs}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => setData(d))
@@ -22,7 +31,7 @@ export function IncentiveDrilldown({ vertical }: { vertical: string }) {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { load(params, vertical); }, [params, vertical, load]);
+  useEffect(() => { load(params, vertical, month); }, [params, vertical, month, load]);
 
   useEffect(() => {
     setCrumbs([{ label: "All Cities", params: {} }]);

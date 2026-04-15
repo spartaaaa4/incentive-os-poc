@@ -11,6 +11,7 @@ import { IncentiveDrilldown } from "@/components/dashboard/incentive-drilldown";
 import {
   TrendingUp, TrendingDown, IndianRupee, ShoppingCart,
   Award, Target, Store, AlertTriangle, ChevronRight,
+  RefreshCw, ChevronLeft, Loader2,
 } from "lucide-react";
 
 type VerticalBreakdown = {
@@ -23,6 +24,8 @@ type VerticalBreakdown = {
 };
 
 type DashboardResponse = {
+  month: string;
+  monthLabel: string;
   stats: {
     totalEmployees: number;
     totalSalesMtd: number;
@@ -74,16 +77,29 @@ const filterOptions: Array<{ label: string; value: "ALL" | Vertical }> = [
 
 type Tab = "drilldown" | "overview";
 
+const monthOptions = [
+  { value: "2026-01", label: "January 2026" },
+  { value: "2026-02", label: "February 2026" },
+  { value: "2026-03", label: "March 2026" },
+  { value: "2026-04", label: "April 2026" },
+  { value: "2026-05", label: "May 2026" },
+  { value: "2026-06", label: "June 2026" },
+];
+
 export function DashboardView() {
   const [selected, setSelected] = useState<"ALL" | Vertical>("ALL");
+  const [month, setMonth] = useState("2026-04");
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [recalculating, setRecalculating] = useState(false);
   const [tab, setTab] = useState<Tab>("drilldown");
 
   useEffect(() => {
     setLoading(true);
-    const qs = selected === "ALL" ? "" : `?vertical=${selected}`;
-    fetch(`/api/dashboard${qs}`)
+    const params = new URLSearchParams();
+    if (selected !== "ALL") params.set("vertical", selected);
+    params.set("month", month);
+    fetch(`/api/dashboard?${params.toString()}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -91,7 +107,32 @@ export function DashboardView() {
       .then((payload: DashboardResponse) => setData(payload))
       .catch((err) => console.error("Dashboard fetch failed:", err))
       .finally(() => setLoading(false));
-  }, [selected]);
+  }, [selected, month]);
+
+  const handleRecalculate = async () => {
+    setRecalculating(true);
+    try {
+      const res = await fetch("/api/recalculate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ month }),
+      });
+      if (res.ok) {
+        // Refresh dashboard data
+        const params = new URLSearchParams();
+        if (selected !== "ALL") params.set("vertical", selected);
+        params.set("month", month);
+        const refreshRes = await fetch(`/api/dashboard?${params.toString()}`);
+        if (refreshRes.ok) {
+          const payload = await refreshRes.json();
+          setData(payload);
+        }
+      }
+    } catch (err) {
+      console.error("Recalculate failed:", err);
+    }
+    setRecalculating(false);
+  };
 
   const unlockable = useMemo(() => {
     if (!data) return 0;
@@ -112,7 +153,7 @@ export function DashboardView() {
   return (
     <div className="space-y-6">
       {/* Filter row */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           {filterOptions.map((option) => (
             <button
@@ -128,7 +169,47 @@ export function DashboardView() {
             </button>
           ))}
         </div>
-        <p className="text-xs text-slate-400">April 2026 MTD</p>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => {
+                const idx = monthOptions.findIndex((m) => m.value === month);
+                if (idx > 0) setMonth(monthOptions[idx - 1].value);
+              }}
+              disabled={month === monthOptions[0].value}
+              className="p-1 rounded hover:bg-slate-200 text-slate-400 disabled:opacity-30"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <select
+              value={month}
+              onChange={(e) => setMonth(e.target.value)}
+              className="text-sm font-medium text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {monthOptions.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                const idx = monthOptions.findIndex((m) => m.value === month);
+                if (idx < monthOptions.length - 1) setMonth(monthOptions[idx + 1].value);
+              }}
+              disabled={month === monthOptions[monthOptions.length - 1].value}
+              className="p-1 rounded hover:bg-slate-200 text-slate-400 disabled:opacity-30"
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          <button
+            onClick={handleRecalculate}
+            disabled={recalculating}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors disabled:opacity-50"
+          >
+            {recalculating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            {recalculating ? "Recalculating..." : "Recalculate Incentives"}
+          </button>
+        </div>
       </div>
 
       {data && (
@@ -293,7 +374,7 @@ export function DashboardView() {
 
           {/* Tab content */}
           {tab === "drilldown" && (
-            <IncentiveDrilldown vertical={selected === "ALL" ? "" : selected} />
+            <IncentiveDrilldown vertical={selected === "ALL" ? "" : selected} month={month} />
           )}
 
           {tab === "overview" && (
