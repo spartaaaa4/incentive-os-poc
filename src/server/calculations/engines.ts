@@ -14,13 +14,34 @@ type RecalculateInput = {
   periodEnd: Date;
 };
 
-const familyCodeToName: Record<string, string> = {
-  FF01: "Laptops & Desktops",
-  FF03: "Tablets",
-  FH07: "Photography",
-  FK01: "Wireless Phones",
-  FH01: "Home Entertainment TVs",
-  FJ03: "Large Appliances",
+/**
+ * Maps product family codes to the slab product-family names they can match.
+ * A code can map to multiple slab names (e.g. FJ03 can be "Large Appliances"
+ * for non-IFB brands or "Large Washing Machines (LWC)" for IFB).
+ * Brand filtering in the slab itself disambiguates.
+ */
+const familyCodeToSlabNames: Record<string, string[]> = {
+  // IT department
+  FF01: ["Laptops & Desktops"],
+  FF03: ["Tablets"],
+  // ENT department
+  FH01: ["Home Entertainment TVs"],
+  FH07: ["Photography"],
+  // Telecom
+  FK01: ["Wireless Phones"],
+  // Small Appliances → SDA & Consumer Appliances slab
+  FI01: ["SDA & Consumer Appliances"],
+  FI02: ["SDA & Consumer Appliances"],
+  FI04: ["SDA & Consumer Appliances"],
+  FI05: ["SDA & Consumer Appliances"],
+  FI06: ["SDA & Consumer Appliances"],
+  FI07: ["SDA & Consumer Appliances"],
+  // Large Appliances
+  FJ01: ["Large Appliances"],
+  FJ02: ["Large Appliances"],
+  FJ03: ["Large Appliances", "Large Washing Machines (LWC)"],
+  FJ04: ["Large Appliances"],
+  FJ05: ["Large Appliances"],
 };
 
 function asNumber(value: unknown): number {
@@ -31,11 +52,17 @@ function asNumber(value: unknown): number {
   return Number(value ?? 0);
 }
 
+/**
+ * Products excluded entirely from Electronics incentives (vendor brief §6.4):
+ *  - All Apple products (across all categories)
+ *  - OnePlus phones only (FK01) — OnePlus TVs (FH01) earn their own slab
+ *  - Microsoft Surface laptops only (FF01)
+ */
 function isElectronicsExcluded(brand: string | null, familyCode: string | null): boolean {
-  const normalizedBrand = (brand ?? "").toLowerCase();
-  if (normalizedBrand.includes("apple")) return true;
-  if (familyCode === "FK01" && normalizedBrand.includes("oneplus")) return true;
-  if (familyCode === "FF01" && normalizedBrand.includes("surface")) return true;
+  const b = (brand ?? "").toLowerCase();
+  if (b.includes("apple")) return true;
+  if (familyCode === "FK01" && b.includes("oneplus")) return true;
+  if (familyCode === "FF01" && b.includes("surface")) return true;
   return false;
 }
 
@@ -91,6 +118,15 @@ async function calculateElectronics(input: RecalculateInput) {
       include: { employee: true },
     });
 
+    // Look up employee → department mapping for this store
+    const storeEmployees = await db.employeeMaster.findMany({
+      where: { storeCode, payrollStatus: PayrollStatus.ACTIVE },
+    });
+    const employeeDeptMap = new Map<string, string | null>();
+    for (const emp of storeEmployees) {
+      employeeDeptMap.set(emp.employeeId, emp.department);
+    }
+
     const deptActual = new Map<string, number>();
     const employeeBase = new Map<string, number>();
 
@@ -107,10 +143,14 @@ async function calculateElectronics(input: RecalculateInput) {
       if (txn.employee.role !== EmployeeRole.SA) continue;
 
       const unitPrice = asNumber(txn.grossAmount) / txn.quantity;
-      const familyName = familyCodeToName[txn.productFamilyCode] ?? txn.productFamilyCode;
+      const slabNames = familyCodeToSlabNames[txn.productFamilyCode];
+      if (!slabNames) continue;
+
+      // Find matching slab: product family name must be in the candidate list,
+      // brand must match, and unit price must fall within range
       const matchingSlab = plan.productIncentiveSlabs.find(
         (slab) =>
-          slab.productFamily.toLowerCase().includes(familyName.toLowerCase().replace(" & ", " ")) &&
+          slabNames.some((name) => slab.productFamily === name) &&
           brandMatches(slab.brandFilter, txn.brand) &&
           unitPrice >= asNumber(slab.priceFrom) &&
           unitPrice <= asNumber(slab.priceTo),
@@ -131,6 +171,7 @@ async function calculateElectronics(input: RecalculateInput) {
       },
     });
 
+    // Sum targets per department
     const deptTargets = new Map<string, number>();
     for (const target of targets) {
       if (!target.department) continue;
@@ -139,7 +180,9 @@ async function calculateElectronics(input: RecalculateInput) {
 
     // Compute per-department achievement and multiplier
     const deptAchievement = new Map<string, { target: number; actual: number; achievementPct: number; multiplierPct: number }>();
-    for (const [dept, actual] of deptActual.entries()) {
+    const allDepts = new Set([...deptActual.keys(), ...deptTargets.keys()]);
+    for (const dept of allDepts) {
+      const actual = deptActual.get(dept) ?? 0;
       const target = deptTargets.get(dept) ?? 0;
       const achievementPct = target > 0 ? (actual / target) * 100 : 0;
       const multiplier =
@@ -151,21 +194,15 @@ async function calculateElectronics(input: RecalculateInput) {
       deptAchievement.set(dept, { target, actual, achievementPct, multiplierPct: asNumber(multiplier) });
     }
 
-    // Compute a store-level weighted average multiplier for each SA
-    // SA sells across departments; each department has its own multiplier
-    // We use the store's overall achievement (total actual / total target) for the multiplier
-    const totalStoreTarget = [...deptTargets.values()].reduce((s, v) => s + v, 0);
-    const totalStoreActual = [...deptActual.values()].reduce((s, v) => s + v, 0);
-    const storeAchievementPct = totalStoreTarget > 0 ? (totalStoreActual / totalStoreTarget) * 100 : 0;
-    const storeMultiplier =
-      plan.achievementMultipliers.find(
-        (item) =>
-          storeAchievementPct >= asNumber(item.achievementFrom) &&
-          storeAchievementPct <= asNumber(item.achievementTo),
-      )?.multiplierPct ?? 0;
-
+    // Each SA is mapped 1:1 to a department; their multiplier comes from
+    // their department's achievement, not a store-wide average.
     const ledgerRows = [];
     for (const [employeeId, base] of employeeBase.entries()) {
+      const empDept = employeeDeptMap.get(employeeId);
+      const deptInfo = empDept ? deptAchievement.get(empDept) : undefined;
+      const multiplierPct = deptInfo?.multiplierPct ?? 0;
+      const achievementPct = deptInfo?.achievementPct ?? 0;
+
       ledgerRows.push({
         planId: plan.id,
         employeeId,
@@ -174,13 +211,14 @@ async function calculateElectronics(input: RecalculateInput) {
         periodStart: startOfMonth(input.periodStart),
         periodEnd: endOfMonth(input.periodEnd),
         baseIncentive: base,
-        multiplierApplied: asNumber(storeMultiplier),
-        achievementPct: storeAchievementPct,
-        finalIncentive: base * (asNumber(storeMultiplier) / 100),
+        multiplierApplied: multiplierPct,
+        achievementPct,
+        finalIncentive: base * (multiplierPct / 100),
         calculationStatus: "FINAL" as const,
         calculationDetails: {
-          storeTarget: totalStoreTarget,
-          storeActual: totalStoreActual,
+          employeeDepartment: empDept,
+          departmentTarget: deptInfo?.target ?? 0,
+          departmentActual: deptInfo?.actual ?? 0,
           departments: Object.fromEntries(deptAchievement),
         },
       });
@@ -235,7 +273,7 @@ async function calculateGrocery(input: RecalculateInput) {
         where: {
           storeCode: { in: relevantStoreCodes },
           payrollStatus: PayrollStatus.ACTIVE,
-          role: { in: [EmployeeRole.SM, EmployeeRole.DM, EmployeeRole.SA] },
+          role: { in: [EmployeeRole.SM, EmployeeRole.DM, EmployeeRole.SA, EmployeeRole.BA] },
         },
       }),
     ]);

@@ -128,6 +128,7 @@ model EmployeeMaster {
   employeeName    String         @map("employee_name")
   role            EmployeeRole
   storeCode       String         @map("store_code") @db.VarChar(32)
+  department      String?
   payrollStatus   PayrollStatus  @default(ACTIVE) @map("payroll_status")
   dateOfJoining   DateTime       @map("date_of_joining") @db.Date
   dateOfExit      DateTime?      @map("date_of_exit") @db.Date

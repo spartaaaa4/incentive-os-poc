@@ -120,10 +120,15 @@ async function main() {
     employeeName: string;
     role: EmployeeRole;
     storeCode: string;
+    department: string | null;
     payrollStatus: PayrollStatus;
     dateOfJoining: Date;
     dateOfExit: Date | null;
   }> = [];
+
+  // Demo-only: spread SAs across departments for seed data.
+  // In production, department is set during employee onboarding.
+  const elecDeptCycle = ["IT", "ENT", "Telecom", "Large Appliances", "Small Appliances", "AIOT"];
 
   let employeeCounter = 1;
   for (const store of stores) {
@@ -136,11 +141,19 @@ async function main() {
     }
     roles.forEach((role, index) => {
       const id = `E${String(employeeCounter++).padStart(3, "0")}`;
+      // For seed data, assign Electronics SAs/BAs to departments
+      let department: string | null = null;
+      if (store.vertical === Vertical.ELECTRONICS) {
+        if (role === EmployeeRole.SA || role === EmployeeRole.BA) {
+          department = elecDeptCycle[index % elecDeptCycle.length];
+        }
+      }
       employeeRows.push({
         employeeId: id,
         employeeName: `${names[index % names.length]} ${store.city}`,
         role,
         storeCode: store.storeCode,
+        department,
         payrollStatus: index % 31 === 0 ? PayrollStatus.NOTICE_PERIOD : PayrollStatus.ACTIVE,
         dateOfJoining: new Date("2023-01-01"),
         dateOfExit: null,
@@ -288,10 +301,20 @@ async function main() {
   const electronicsDepartments = [
     ["IT", "FF01", "Laptop"],
     ["IT", "FF03", "Tablet"],
+    ["IT", "FF04", "IT Peripheral"],
     ["ENT", "FH01", "High End TV"],
+    ["ENT", "FH05", "Audio"],
     ["ENT", "FH07", "Photography"],
+    ["Small Appliances", "FI01", "Garment Care"],
+    ["Small Appliances", "FI02", "Home Care"],
+    ["Small Appliances", "FI05", "Kitchen Care"],
+    ["Small Appliances", "FI07", "Personal Care"],
     ["Telecom", "FK01", "Wireless Phone"],
+    ["Large Appliances", "FJ01", "Air Care"],
+    ["Large Appliances", "FJ02", "Food Preservation"],
     ["Large Appliances", "FJ03", "Laundry & Wash Care"],
+    ["AIOT", "FG01", "Personal AV"],
+    ["AIOT", "FG03", "Charging Solutions"],
   ];
 
   const aprilStart = new Date("2026-04-01");
@@ -392,10 +415,14 @@ async function main() {
   const electronicsFamilies = [
     { dept: "Telecom", code: "FK01", articlePrefix: "PH", brands: ["Samsung", "Oppo", "Vivo", "Xiaomi", "Realme", "OnePlus"], min: 8000, max: 54000 },
     { dept: "ENT", code: "FH01", articlePrefix: "TV", brands: ["Sony", "LG", "MI", "OnePlus", "Realme"], min: 18000, max: 85000 },
-    { dept: "Large Appliances", code: "FJ03", articlePrefix: "AP", brands: ["Samsung", "LG", "Whirlpool", "IFB"], min: 12000, max: 50000 },
+    { dept: "Large Appliances", code: "FJ01", articlePrefix: "AC", brands: ["Daikin", "Voltas", "LG", "Samsung"], min: 20000, max: 55000 },
+    { dept: "Large Appliances", code: "FJ02", articlePrefix: "RF", brands: ["Samsung", "LG", "Whirlpool", "Godrej"], min: 15000, max: 50000 },
+    { dept: "Large Appliances", code: "FJ03", articlePrefix: "WM", brands: ["Samsung", "LG", "Whirlpool", "IFB"], min: 12000, max: 50000 },
     { dept: "IT", code: "FF01", articlePrefix: "LP", brands: ["HP", "Dell", "Lenovo", "Apple", "Microsoft Surface"], min: 25000, max: 90000 },
     { dept: "ENT", code: "FH07", articlePrefix: "CM", brands: ["Canon", "Nikon", "Sony"], min: 12000, max: 60000 },
     { dept: "IT", code: "FF03", articlePrefix: "TB", brands: ["Samsung", "Apple", "Lenovo"], min: 9000, max: 45000 },
+    { dept: "Small Appliances", code: "FI02", articlePrefix: "HC", brands: ["Philips", "Dyson", "Eureka Forbes"], min: 2000, max: 8000 },
+    { dept: "Small Appliances", code: "FI05", articlePrefix: "KC", brands: ["Prestige", "Butterfly", "Philips"], min: 1500, max: 6000 },
   ];
 
   const employeeByStore = new Map<string, string[]>();
