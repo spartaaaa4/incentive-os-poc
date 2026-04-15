@@ -279,7 +279,12 @@ async function getStoreDetail(params: Params) {
     achievementPct: Math.round(b.achievement * 10) / 10, finalIncentive: Math.round(b.final),
   })).sort((a, b) => b.finalIncentive - a.finalIncentive);
 
-  const totalIncentive = employees.reduce((s, e) => s + e.finalIncentive, 0);
+  const totalIncentiveEarned = employees.reduce((s, e) => s + e.finalIncentive, 0);
+  const totalBaseIncentive = employees.reduce((s, e) => s + e.baseIncentive, 0);
+  const totalStoreSales = departments.reduce((s, d) => s + d.actual, 0);
+  const totalStoreTarget = departments.reduce((s, d) => s + d.target, 0);
+  const storeAchievementPct =
+    totalStoreTarget > 0 ? Math.round((totalStoreSales / totalStoreTarget) * 1000) / 10 : 0;
 
   return {
     level: "storeDetail" as const,
@@ -288,7 +293,17 @@ async function getStoreDetail(params: Params) {
       storeName: store.storeName,
       vertical: store.vertical,
       city: store.city,
-      totalIncentive,
+      /** Sum of final incentive credited in ledger for this store & period */
+      totalIncentive: totalIncentiveEarned,
+      totalIncentiveEarned,
+      /** Sum of base (pre-multiplier) incentive from ledger rows */
+      totalBaseIncentive,
+      /** Store-wide offline gross sales (sum of department actuals) */
+      totalStoreSales: Math.round(totalStoreSales),
+      /** Sum of active targets in period */
+      totalStoreTarget: Math.round(totalStoreTarget),
+      /** Sales ÷ target at store level */
+      storeAchievementPct,
       employeeCount: employees.length,
       totalEmployees: store.employees.length,
     },

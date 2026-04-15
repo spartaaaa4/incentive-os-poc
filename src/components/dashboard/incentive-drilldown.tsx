@@ -2,20 +2,35 @@
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useState, type ReactNode } from "react";
 import {
+  Alert,
   Breadcrumb,
   Button,
   Card,
   Col,
+  Divider,
   Flex,
   Progress,
   Row,
   Space,
   Spin,
+  Statistic,
   Table,
+  Tag,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { ChevronRight, ArrowLeft, TrendingUp, Users, MapPin, Store, Briefcase, User, ShoppingBag } from "lucide-react";
+import {
+  ChevronRight,
+  ArrowLeft,
+  TrendingUp,
+  Users,
+  MapPin,
+  Store,
+  User,
+  ShoppingBag,
+  IndianRupee,
+  Target,
+} from "lucide-react";
 import { formatInr, formatNumber } from "@/lib/format";
 
 type Breadcrumb = { label: string; params: Record<string, string> };
@@ -269,19 +284,39 @@ function StoreView({ data, onDrill }: { data: Record<string, unknown>; onDrill: 
 // ── Level 3: Store Detail (departments + employees) ──
 type EmpRow = { employeeId: string; employeeName: string; role: string; baseIncentive: number; multiplierPct: number; achievementPct: number; finalIncentive: number };
 type StoreDetailSummary = {
-  storeCode: string;
-  storeName: string;
-  vertical: string;
+  storeCode?: string;
+  storeName?: string;
+  vertical?: string;
   city?: string;
-  totalIncentive: number;
-  employeeCount: number;
-  totalEmployees: number;
+  /** @deprecated same as totalIncentiveEarned */
+  totalIncentive?: number;
+  totalIncentiveEarned?: number;
+  totalBaseIncentive?: number;
+  totalStoreSales?: number;
+  totalStoreTarget?: number;
+  storeAchievementPct?: number;
+  employeeCount?: number;
+  totalEmployees?: number;
 };
 
 function StoreDetailView({ data, onDrill }: { data: Record<string, unknown>; onDrill: (label: string, p: Record<string, string>) => void }) {
   const summary = data.summary as StoreDetailSummary;
   const departments = data.departments as Array<{ department: string; vertical: string; target: number; actual: number; achievementPct: number }>;
   const employees = data.employees as EmpRow[];
+
+  const totalSales =
+    summary.totalStoreSales ??
+    (departments.length ? departments.reduce((s, d) => s + d.actual, 0) : 0);
+  const totalTarget =
+    summary.totalStoreTarget ??
+    (departments.length ? departments.reduce((s, d) => s + d.target, 0) : 0);
+  const storeAchievementPct =
+    summary.storeAchievementPct ??
+    (totalTarget > 0 ? Math.round((totalSales / totalTarget) * 1000) / 10 : 0);
+  const incentiveEarned = summary.totalIncentiveEarned ?? summary.totalIncentive ?? 0;
+  const eligibleBase = summary.totalBaseIncentive ?? employees.reduce((s, e) => s + e.baseIncentive, 0);
+  const empCount = summary.employeeCount ?? employees.length;
+  const totalEmps = summary.totalEmployees ?? empCount;
 
   const deptColumns: ColumnsType<(typeof departments)[number]> = [
     { title: "Department", dataIndex: "department" },
@@ -331,6 +366,7 @@ function StoreDetailView({ data, onDrill }: { data: Record<string, unknown>; onD
   ];
 
   const drillEmployee = (r: EmpRow) => {
+    if (!summary.storeCode) return;
     const p: Record<string, string> = { employeeId: r.employeeId, storeCode: summary.storeCode };
     if (summary.city) p.city = summary.city;
     onDrill(r.employeeName, p);
@@ -338,12 +374,139 @@ function StoreDetailView({ data, onDrill }: { data: Record<string, unknown>; onD
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      <Row gutter={[12, 12]}>
-        <Col xs={12} lg={6}><StatCard icon={<Store size={16} />} label="Store" value={summary.storeName ?? summary.storeCode} /></Col>
-        <Col xs={12} lg={6}><StatCard icon={<Briefcase size={16} />} label="Vertical" value={summary.vertical} /></Col>
-        <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Total incentive" value={formatInr(summary.totalIncentive)} valueColor="#047857" /></Col>
-        <Col xs={12} lg={6}><StatCard icon={<Users size={16} />} label="Earning / total" value={`${formatNumber(summary.employeeCount)} / ${formatNumber(summary.totalEmployees ?? summary.employeeCount)}`} /></Col>
-      </Row>
+      <Card size="small" styles={{ body: { padding: 20 } }}>
+        <Flex align="center" justify="space-between" wrap="wrap" gap={12} style={{ marginBottom: 16 }}>
+          <div>
+            <Typography.Title level={4} style={{ margin: 0 }}>
+              {summary.storeName ?? summary.storeCode ?? "Store"}
+            </Typography.Title>
+            <Space size={8} wrap style={{ marginTop: 8 }}>
+              {summary.storeCode ? <Tag>Store code: {summary.storeCode}</Tag> : null}
+              {summary.vertical ? <Tag color="blue">{summary.vertical}</Tag> : null}
+              {summary.city ? <Tag icon={<MapPin size={12} />}>{summary.city}</Tag> : null}
+            </Space>
+          </div>
+          <div style={{ maxWidth: 280 }}>
+            <StatCard
+              icon={<Users size={16} />}
+              label="People (ledger rows / active)"
+              value={`${formatNumber(empCount)} / ${formatNumber(totalEmps)}`}
+            />
+          </div>
+        </Flex>
+
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 16, maxWidth: 720 }}>
+          <strong>Sales</strong> and <strong>targets</strong> are rolled up from every department below. <strong>Incentive earned</strong> is the sum of
+          credited payouts in the ledger for this month. <strong>Eligible (base)</strong> is the sum of pre-multiplier amounts before achievement slabs are applied.
+        </Typography.Paragraph>
+
+        {totalSales > 0 && incentiveEarned === 0 && employees.length === 0 ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Sales are recorded, but no incentive ledger rows yet"
+            description="You will see ₹0 earned until incentives are calculated for this store and period (e.g. run recalculation from the dashboard or confirm active plans and eligibility)."
+          />
+        ) : null}
+
+        <Typography.Text strong style={{ display: "block", marginBottom: 12, fontSize: 13 }}>
+          Sales vs target (whole store)
+        </Typography.Text>
+        <Row gutter={[16, 20]}>
+          <Col xs={24} md={8}>
+            <Card size="small" variant="borderless" style={{ background: "#eff6ff" }}>
+              <Space align="start">
+                <ShoppingBag size={22} style={{ color: "#2563eb", marginTop: 4 }} />
+                <Statistic title="Total sales (store)" value={totalSales} formatter={(v) => formatInr(Number(v))} valueStyle={{ color: "#1e40af", fontWeight: 700 }} />
+              </Space>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 8 }}>
+                Gross offline sales, all departments combined
+              </Typography.Text>
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" variant="borderless" style={{ background: "#f0fdf4" }}>
+              <Space align="start">
+                <Target size={22} style={{ color: "#059669", marginTop: 4 }} />
+                <Statistic title="Total target (store)" value={totalTarget} formatter={(v) => formatInr(Number(v))} valueStyle={{ color: "#065f46", fontWeight: 700 }} />
+              </Space>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 8 }}>
+                Sum of active department targets for this month
+              </Typography.Text>
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" variant="borderless" style={{ background: "#fffbeb" }}>
+              <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                <Space align="center">
+                  <TrendingUp size={22} style={{ color: "#d97706" }} />
+                  <Statistic title="Store achievement" value={storeAchievementPct} suffix="%" valueStyle={{ color: "#92400e", fontWeight: 700 }} />
+                </Space>
+                <Progress percent={Math.min(100, storeAchievementPct)} showInfo={false} strokeColor="#f59e0b" />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Total sales ÷ total target
+                </Typography.Text>
+              </Space>
+            </Card>
+          </Col>
+        </Row>
+
+        <Divider style={{ margin: "20px 0" }} />
+
+        <Typography.Text strong style={{ display: "block", marginBottom: 12, fontSize: 13 }}>
+          Incentives (whole store)
+        </Typography.Text>
+        <Row gutter={[16, 20]}>
+          <Col xs={24} md={8}>
+            <Card size="small" variant="borderless" style={{ background: "#ecfdf5" }}>
+              <Space align="start">
+                <IndianRupee size={22} style={{ color: "#047857", marginTop: 4 }} />
+                <Statistic
+                  title="Incentive earned (credited)"
+                  value={incentiveEarned}
+                  formatter={(v) => formatInr(Number(v))}
+                  valueStyle={{ color: "#047857", fontWeight: 700 }}
+                />
+              </Space>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 8 }}>
+                Sum of final payout in the ledger for this month (what is attributed to people below)
+              </Typography.Text>
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" variant="borderless" style={{ background: "#f5f3ff" }}>
+              <Space align="start">
+                <IndianRupee size={22} style={{ color: "#5b21b6", marginTop: 4 }} />
+                <Statistic
+                  title="Eligible incentive (base pool)"
+                  value={eligibleBase}
+                  formatter={(v) => formatInr(Number(v))}
+                  valueStyle={{ color: "#5b21b6", fontWeight: 700 }}
+                />
+              </Space>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 8 }}>
+                Pre-multiplier total from rules — before achievement slabs adjust what gets paid
+              </Typography.Text>
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" variant="borderless" style={{ background: "#fafafa" }}>
+              <Statistic
+                title="Earned vs eligible (summary)"
+                value={eligibleBase > 0 ? Math.round((incentiveEarned / eligibleBase) * 1000) / 10 : 0}
+                suffix="%"
+                valueStyle={{ fontWeight: 700 }}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 8 }}>
+                {eligibleBase > 0
+                  ? `Credited ${formatInr(incentiveEarned)} of ${formatInr(eligibleBase)} base pool`
+                  : "No base amounts in ledger yet"}
+              </Typography.Text>
+            </Card>
+          </Col>
+        </Row>
+      </Card>
 
       {departments.length > 0 ? (
         <Card title="Department targets & achievement" size="small">
