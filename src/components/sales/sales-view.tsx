@@ -163,13 +163,22 @@ export function SalesView() {
     setFileName(file.name);
     const text = await file.text();
     const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
+
+    // Build a case-insensitive header mapping: lowercase → expected camelCase key
+    const headerMap = new Map<string, string>();
+    expectedColumns.forEach((col) => headerMap.set(col.toLowerCase(), col));
+
     const normalizedRows = parsed.data.map((row) => {
       const normalized: Record<string, string> = {};
       Object.entries(row).forEach(([key, value]) => {
-        normalized[key.trim()] = value?.toString().trim() ?? "";
+        const trimmed = key.trim();
+        // Map to expected camelCase key (case-insensitive) or keep original
+        const mapped = headerMap.get(trimmed.toLowerCase()) ?? trimmed;
+        normalized[mapped] = value?.toString().trim().replace(/^["']+|["']+$/g, "") ?? "";
       });
       return normalized;
     });
+
     const errors: string[] = [];
     const headers = Object.keys(normalizedRows[0] ?? {});
     const missing = expectedColumns.filter((c) => !headers.includes(c));
