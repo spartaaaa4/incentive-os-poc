@@ -227,22 +227,12 @@ export async function POST(request: Request) {
     const force = url.searchParams.get("force") === "true";
 
     if (force) {
-      await db.incentiveLedger.deleteMany();
-      await db.auditLog.deleteMany();
-      await db.attendance.deleteMany();
-      await db.salesTransaction.deleteMany();
-      await db.target.deleteMany();
-      await db.campaignPayoutSlab.deleteMany();
-      await db.campaignStoreTarget.deleteMany();
-      await db.campaignArticle.deleteMany();
-      await db.campaignConfig.deleteMany();
-      await db.productIncentiveSlab.deleteMany();
-      await db.achievementMultiplier.deleteMany();
-      await db.fnlRoleSplit.deleteMany();
-      await db.incentivePlan.deleteMany();
-      await db.userCredential.deleteMany();
-      await db.employeeMaster.deleteMany();
-      await db.storeMaster.deleteMany();
+      await db.$executeRaw`TRUNCATE TABLE
+        incentive_ledger, audit_log, attendance, sales_transaction, target,
+        campaign_payout_slab, campaign_store_target, campaign_article, campaign_config,
+        product_incentive_slab, achievement_multiplier, fnl_role_split, incentive_plan,
+        user_credential, employee_master, store_master
+        CASCADE`;
     }
 
     const existingStores = await db.storeMaster.count();
