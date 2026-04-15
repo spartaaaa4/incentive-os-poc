@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { format, subMonths, startOfMonth } from "date-fns";
-import { Loader2, Trophy, Building2, MapPin, Calendar, ChevronRight, Store, Filter } from "lucide-react";
+import { Loader2, Trophy, MapPin, Calendar, ChevronRight, Store, Filter } from "lucide-react";
 import { formatInr, formatNumber } from "@/lib/format";
 
 /* ------------------------------------------------------------------ */
