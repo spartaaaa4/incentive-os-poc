@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  AreaChart, Area, CartesianGrid, Line, ComposedChart,
+  Area, CartesianGrid, Line, ComposedChart,
 } from "recharts";
 import { Vertical } from "@/lib/constants";
 import { formatInr, formatNumber } from "@/lib/format";
