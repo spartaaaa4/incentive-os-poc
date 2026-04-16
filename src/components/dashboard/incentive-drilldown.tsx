@@ -716,7 +716,7 @@ function ElectronicsDetail({ data, firstName }: { data: Record<string, unknown>;
 }
 
 function GroceryDetail({ data, firstName }: { data: Record<string, unknown>; firstName: string }) {
-  const standing = data.currentStanding as { campaignName: string; storeTarget: number; storeActual: number; achievementPct: number; totalPiecesSold: number; currentRate: number; totalStorePayout: number; employeeCount: number; yourPayout: number } | null;
+  const standing = data.currentStanding as { campaignName: string; campaignTarget: number; campaignActual: number; achievementPct: number; totalPiecesSold: number; currentRate: number; totalStorePayout: number; employeeCount: number; yourPayout: number } | null;
   const slabs = data.payoutSlabs as Array<{ from: number; to: number; rate: number; isCurrentSlab: boolean; payoutAtSlab: number }>;
   const sales = data.recentSales as Array<{ date: string; brand: string; articleCode: string; description: string; quantity: number; grossAmount: number }> | undefined;
   if (!standing) return null;
@@ -726,7 +726,7 @@ function GroceryDetail({ data, firstName }: { data: Record<string, unknown>; fir
       <Row gutter={[12, 12]}>
         <Col xs={12} lg={6}><StatCard icon={<Store size={16} />} label="Campaign" value={standing.campaignName} /></Col>
         <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label="Achievement" value={`${standing.achievementPct}%`} /></Col>
-        <Col xs={12} lg={6}><StatCard icon={<Users size={16} />} label="Pieces sold" value={formatNumber(standing.totalPiecesSold)} /></Col>
+        <Col xs={12} lg={6}><StatCard icon={<Users size={16} />} label="Eligible pieces sold" value={formatNumber(standing.totalPiecesSold)} /></Col>
         <Col xs={12} lg={6}><StatCard icon={<TrendingUp size={16} />} label={`${firstName}'s payout`} value={formatInr(standing.yourPayout)} valueColor="#047857" /></Col>
       </Row>
 
@@ -735,15 +735,15 @@ function GroceryDetail({ data, firstName }: { data: Record<string, unknown>; fir
         <h4 className="text-sm font-semibold text-emerald-900 mb-2">How {firstName}&apos;s incentive is calculated</h4>
         <div className="text-sm text-emerald-800 space-y-1">
           <p>1. Store must achieve <strong>100%+</strong> of campaign target to unlock incentives</p>
-          <p>2. Achievement: <strong>{formatInr(standing.storeActual)} / {formatInr(standing.storeTarget)} = {standing.achievementPct}%</strong></p>
+          <p>2. Achievement: <strong>{formatInr(standing.campaignActual)} / {formatInr(standing.campaignTarget)} = {standing.achievementPct}%</strong></p>
           <p>3. At this level, rate = <strong>{"\u20B9"}{standing.currentRate}/piece</strong> × {standing.totalPiecesSold} pieces = <strong>{formatInr(Math.round(standing.currentRate * standing.totalPiecesSold))} total pool</strong></p>
           <p>4. Split equally among {standing.employeeCount} employees → <strong>{firstName}&apos;s share: {formatInr(standing.yourPayout)}</strong></p>
         </div>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-5">
-        <h4 className="font-medium text-slate-900 mb-1">Store Progress</h4>
-        <p className="text-xs text-slate-500 mb-3">Target: {formatInr(standing.storeTarget)} | Actual: {formatInr(standing.storeActual)} | Rate: {"\u20B9"}{standing.currentRate}/piece | Split among {standing.employeeCount} employees</p>
+        <h4 className="font-medium text-slate-900 mb-1">Campaign Progress</h4>
+        <p className="text-xs text-slate-500 mb-3">Target: {formatInr(standing.campaignTarget)} | Actual: {formatInr(standing.campaignActual)} | Rate: {"\u20B9"}{standing.currentRate}/piece | Split among {standing.employeeCount} employees</p>
         <AchievementBar pct={standing.achievementPct} />
       </div>
 
