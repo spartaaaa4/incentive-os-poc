@@ -190,41 +190,274 @@ const groceryDesiredAchievement: Record<string, number> = {
 
 // ─── F&L: weekly targets and desired sales (Sun-Sat weeks in April 2026) ────
 // April 2026: Apr 1 = Wednesday, so first full Sun-Sat is Apr 5-11
+// Apr 14 = Ambedkar Jayanti (HOLIDAY for all employees)
+//
+// Store outcomes per requirements:
+//   FL01 — exceeds ALL 4 weeks (happy-path, 1SM+1DM+8SA, 60/24/16 split)
+//   FL02 — alternating: exceeds W1, misses W2, exceeds W3, misses W4 (single-MOD, 70/30 split)
+//   FL03 — exceeds W1-W3, misses W4 (3-DM store, 60/12/9.2% split)
+//   FL04 — misses W1 by exactly 0.1%, exceeds W2 by exactly 0.1%, then comfortably W3-W4 (edge-case store)
+//   FL05 — exceeds W1-W2, CLOSED W3 (0 sales → ₹0), exceeds W4
 
 type FnlWeekPlan = { start: Date; end: Date; target: number; desiredSales: number };
 
 const fnlWeeklyPlans: Record<string, FnlWeekPlan[]> = {
-  "FL01": [ // Trends Indiranagar — 3 of 4 weeks qualify
-    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target: 900000, desiredSales: 960000 },
-    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1100000, desiredSales: 1210000 },
-    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1250000, desiredSales: 1150000 }, // fails
-    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 1000000, desiredSales: 1070000 },
+  "FL01": [ // Trends Indiranagar — all 4 weeks qualify
+    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target:  900_000, desiredSales:   980_000 }, // +8.9%
+    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1_000_000, desiredSales: 1_100_000 }, // +10%
+    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1_200_000, desiredSales: 1_350_000 }, // +12.5%
+    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 1_000_000, desiredSales: 1_080_000 }, // +8%
   ],
-  "FL02": [ // TST Whitefield — 2 of 4 weeks qualify
-    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target: 850000, desiredSales: 790000 },  // fails
-    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1000000, desiredSales: 1120000 },
-    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1150000, desiredSales: 1230000 },
-    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 950000, desiredSales: 910000 },  // fails
+  "FL02": [ // TST Whitefield — alternating qualify/miss
+    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target:   800_000, desiredSales:   900_000 }, // +12.5% EXCEEDS
+    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target:   950_000, desiredSales:   900_000 }, // −5.3%  MISSES
+    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1_050_000, desiredSales: 1_150_000 }, // +9.5%  EXCEEDS
+    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target:   900_000, desiredSales:   850_000 }, // −5.6%  MISSES
   ],
-  "FL03": [ // Trends Andheri — 2 of 4 weeks qualify
-    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target: 1000000, desiredSales: 1105000 },
-    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1200000, desiredSales: 1140000 }, // fails
-    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1300000, desiredSales: 1380000 },
-    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 1100000, desiredSales: 1020000 }, // fails
+  "FL03": [ // Trends Andheri — W1-W3 qualify, W4 misses
+    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target: 1_000_000, desiredSales: 1_100_000 }, // +10%
+    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1_150_000, desiredSales: 1_250_000 }, // +8.7%
+    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1_300_000, desiredSales: 1_420_000 }, // +9.2%
+    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 1_100_000, desiredSales: 1_050_000 }, // −4.5% MISSES
   ],
-  "FL04": [ // Trends HSR — 3 of 4 weeks qualify
-    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target: 800000, desiredSales: 860000 },
-    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 950000, desiredSales: 1015000 },
-    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1100000, desiredSales: 1180000 },
-    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 900000, desiredSales: 870000 }, // fails
+  "FL04": [ // Trends HSR — edge cases: 0.1% miss, 0.1% hit, then comfortable
+    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target: 1_000_000, desiredSales:   999_000 }, // 99.9%  MISSES by 0.1%
+    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1_000_000, desiredSales: 1_001_000 }, // 100.1% EXCEEDS by 0.1%
+    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1_100_000, desiredSales: 1_250_000 }, // +13.6%
+    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 1_000_000, desiredSales: 1_150_000 }, // +15%
   ],
-  "FL05": [ // TST Pune — 2 of 4 weeks qualify
-    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target: 950000, desiredSales: 880000 },  // fails
-    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1100000, desiredSales: 1040000 }, // fails
-    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1200000, desiredSales: 1320000 },
-    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target: 1000000, desiredSales: 1090000 },
+  "FL05": [ // TST Pune — W3 CLOSED (0 sales), rest qualify
+    { start: new Date("2026-04-05"), end: new Date("2026-04-11"), target:   850_000, desiredSales:   960_000 }, // +12.9%
+    { start: new Date("2026-04-12"), end: new Date("2026-04-18"), target: 1_000_000, desiredSales: 1_100_000 }, // +10%
+    { start: new Date("2026-04-19"), end: new Date("2026-04-25"), target: 1_100_000, desiredSales:         0 }, // CLOSED → 0 sales → ₹0
+    { start: new Date("2026-04-26"), end: new Date("2026-05-02"), target:   900_000, desiredSales: 1_000_000 }, // +11.1%
   ],
 };
+
+// ─── F&L: explicit employee definitions ─────────────────────────────────────
+// Non-FNL stores continue to use the generic employee loop (E001-E170).
+// FNL stores use these explicit definitions (E171-E220) so that every edge-case
+// scenario is precisely controlled: correct role counts, payroll statuses, join
+// and exit dates.
+//
+// Store configs (drives fnlRoleSplit lookup):
+//   FL01: 1 SM + 1 DM + 8 SA + 1 BA  → split [1,1] = 60%/24%/16%
+//   FL02: 1 SM + 0 DM + 5 SA + 1 NP-SA + 1 mid-joiner-SA → split [1,0] = 70%/30%
+//   FL03: 1 SM + 3 DM + 10 SA + 1 DA-SA + 1 LLU-SA → split [1,3] = 60%/12%/9.2%
+//   FL04: 1 SM + 2 DM + 6 SA  → split [1,2] = 60%/16%/12%
+//   FL05: 1 SM + 1 DM + 4 SA  → split [1,1] = 60%/24%/16%
+
+type FnlEmpDef = {
+  employeeId: string;
+  employeeName: string;
+  role: EmployeeRole;
+  storeCode: string;
+  payrollStatus: PayrollStatus;
+  dateOfJoining: Date;
+  dateOfExit: Date | null;
+  attendanceScenario: string; // for controlled attendance generation
+};
+
+const fnlEmployeeDefs: FnlEmpDef[] = [
+  // ── FL01: Trends Indiranagar (1SM + 1DM + 8SA + 1BA = 11) ─────────────────
+  // Happy-path store. E178 is the "threshold & disqualification" test SA.
+  // E181 is Brand Associate — role never eligible for FNL incentives.
+  { employeeId: "E171", employeeName: "Arjun Bengaluru",  role: EmployeeRole.SM, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E172", employeeName: "Priya Bengaluru",  role: EmployeeRole.DM, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E173", employeeName: "Rahul Bengaluru",  role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E174", employeeName: "Neha Bengaluru",   role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E175", employeeName: "Dev Bengaluru",    role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E176", employeeName: "Sneha Bengaluru",  role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E177", employeeName: "Karan Bengaluru",  role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  // E178: W1 = 5P+1ABSENT+1WO → ABSENT disqualifies entire week (ineligible W1)
+  //        W2 = 5P+1HOLIDAY+1WO → exactly 5 PRESENT, no disqualifying day → ELIGIBLE (minimum threshold)
+  { employeeId: "E178", employeeName: "Ishita Bengaluru", role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "THRESHOLD_TEST" },
+  { employeeId: "E179", employeeName: "Rohan Bengaluru",  role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E180", employeeName: "Diya Bengaluru",   role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  // E181: Brand Associate — role=BA, never eligible for FNL payout regardless of attendance
+  { employeeId: "E181", employeeName: "Meera Bengaluru",  role: EmployeeRole.BA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+
+  // ── FL02: TST Whitefield (1SM + 5SA + 1NP-SA + 1 mid-joiner-SA = 8, 0 DMs) ─
+  // 0 DMs → triggers 70% SA / 30% SM single-MOD split.
+  // E188: NOTICE_PERIOD SA — perfect attendance every week, but payroll status blocks payout.
+  // E189: mid-period joiner (joined Week 2 = Apr 12) — ineligible W1, eligible W2+.
+  { employeeId: "E182", employeeName: "Aarav Bengaluru",  role: EmployeeRole.SM, storeCode: "FL02", payrollStatus: PayrollStatus.ACTIVE,        dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E183", employeeName: "Vivaan Bengaluru", role: EmployeeRole.SA, storeCode: "FL02", payrollStatus: PayrollStatus.ACTIVE,        dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E184", employeeName: "Aditya Bengaluru", role: EmployeeRole.SA, storeCode: "FL02", payrollStatus: PayrollStatus.ACTIVE,        dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E185", employeeName: "Saanvi Bengaluru", role: EmployeeRole.SA, storeCode: "FL02", payrollStatus: PayrollStatus.ACTIVE,        dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E186", employeeName: "Ananya Bengaluru", role: EmployeeRole.SA, storeCode: "FL02", payrollStatus: PayrollStatus.ACTIVE,        dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E187", employeeName: "Diya Bengaluru",   role: EmployeeRole.SA, storeCode: "FL02", payrollStatus: PayrollStatus.ACTIVE,        dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  // E188: NOTICE_PERIOD — in engine's activeEmployees (counts for split denominator)
+  //   but NOT in disbursableEmployees → ₹0 regardless of attendance
+  { employeeId: "E188", employeeName: "Rohan Bengaluru",  role: EmployeeRole.SA, storeCode: "FL02", payrollStatus: PayrollStatus.NOTICE_PERIOD, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  // E189: joined 2026-04-12 (first day of Week 2) → engine excludes from W1 (dateOfJoining > periodEnd)
+  //   W2+: standard attendance, ACTIVE → eligible when store qualifies
+  { employeeId: "E189", employeeName: "Karan Bengaluru",  role: EmployeeRole.SA, storeCode: "FL02", payrollStatus: PayrollStatus.ACTIVE,        dateOfJoining: new Date("2026-04-12"), dateOfExit: null, attendanceScenario: "MID_PERIOD_JOINER" },
+
+  // ── FL03: Trends Andheri (1SM + 3DM + 10SA + 1DA-SA + 1LLU-SA = 16) ────────
+  // 3 DMs → split [1,3] = 60%/12%/9.2% per DM.
+  // E202: approved-leave trap — 5P+1LA+1WO in W3 → LEAVE_APPROVED disqualifies.
+  // E203: exits mid-W3 (Apr 21) — only 2 PRESENT days in W3 → ineligible W3; excluded W4.
+  // E204: DISCIPLINARY_ACTION — counted in activeEmployees for split math but NOT disbursable.
+  // E205: LONG_LEAVE_UNAUTHORISED — completely excluded from activeEmployees (not even counted).
+  { employeeId: "E190", employeeName: "Vivaan Mumbai",  role: EmployeeRole.SM, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E191", employeeName: "Aditya Mumbai",  role: EmployeeRole.DM, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E192", employeeName: "Saanvi Mumbai",  role: EmployeeRole.DM, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E193", employeeName: "Ananya Mumbai",  role: EmployeeRole.DM, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E194", employeeName: "Rahul Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E195", employeeName: "Nitin Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E196", employeeName: "Priya Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E197", employeeName: "Ayesha Mumbai",  role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E198", employeeName: "Sneha Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E199", employeeName: "Dev Mumbai",     role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E200", employeeName: "Om Mumbai",      role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  { employeeId: "E201", employeeName: "Arjun Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  // E202: W3 = 5P+1WO+1LEAVE_APPROVED → has approved-leave day → ineligible W3
+  { employeeId: "E202", employeeName: "Ritika Mumbai",  role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "LEAVE_APPROVED_TRAP" },
+  // E203: exits 2026-04-21 (W3). Engine excludes from W4. W3 attendance = 2P → ineligible W3.
+  { employeeId: "E203", employeeName: "Neha Mumbai",    role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: new Date("2026-04-21"), attendanceScenario: "EXITS_WEEK3" },
+  // E204: DISCIPLINARY_ACTION — in activeEmployees (contributes to SA denomination) but not disbursable
+  { employeeId: "E204", employeeName: "Aarav Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.DISCIPLINARY_ACTION,     dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
+  // E205: LONG_LEAVE_UNAUTHORISED — completely excluded from activeEmployees (doesn't count toward split)
+  { employeeId: "E205", employeeName: "Meera Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.LONG_LEAVE_UNAUTHORISED,  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "LONG_LEAVE" },
+
+  // ── FL04: Trends HSR (1SM + 2DM + 6SA = 9) ──────────────────────────────────
+  // 2 DMs → split [1,2] = 60%/16%/12%.
+  // E214: perfect W1-W3, LEAVE_UNAPPROVED in W4 → ineligible W4 only (late disqualification).
+  //   Reduces eligible SA count W4: 5 instead of 6 → pool divides fewer → per-SA payout increases.
+  { employeeId: "E206", employeeName: "Om Bengaluru",     role: EmployeeRole.SM, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E207", employeeName: "Arjun Bengaluru",  role: EmployeeRole.DM, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E208", employeeName: "Ritika Bengaluru", role: EmployeeRole.DM, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E209", employeeName: "Aarav Bengaluru",  role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E210", employeeName: "Vivaan Bengaluru", role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E211", employeeName: "Aditya Bengaluru", role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E212", employeeName: "Saanvi Bengaluru", role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  { employeeId: "E213", employeeName: "Ananya Bengaluru", role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
+  // E214: W1-W3 standard (eligible). W4: 5P+1LEAVE_UNAPPROVED+1WO → LU disqualifies.
+  { employeeId: "E214", employeeName: "Diya Bengaluru",   role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "LATE_DISQUALIFICATION" },
+
+  // ── FL05: TST Pune (1SM + 1DM + 4SA = 6) ─────────────────────────────────────
+  // W3 = TEMPORARILY_CLOSED → 0 sales generated → actual < target → ₹0 for all.
+  // Attendance W3: all WEEK_OFF (store closed, no customers).
+  { employeeId: "E215", employeeName: "Rahul Pune",  role: EmployeeRole.SM, storeCode: "FL05", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "FL05_CLOSED_W3" },
+  { employeeId: "E216", employeeName: "Nitin Pune",  role: EmployeeRole.DM, storeCode: "FL05", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "FL05_CLOSED_W3" },
+  { employeeId: "E217", employeeName: "Priya Pune",  role: EmployeeRole.SA, storeCode: "FL05", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "FL05_CLOSED_W3" },
+  { employeeId: "E218", employeeName: "Ayesha Pune", role: EmployeeRole.SA, storeCode: "FL05", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "FL05_CLOSED_W3" },
+  { employeeId: "E219", employeeName: "Sneha Pune",  role: EmployeeRole.SA, storeCode: "FL05", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "FL05_CLOSED_W3" },
+  { employeeId: "E220", employeeName: "Dev Pune",    role: EmployeeRole.SA, storeCode: "FL05", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "FL05_CLOSED_W3" },
+];
+
+// ─── F&L: per-employee daily attendance generator ───────────────────────────
+// Generates records for Apr 1 – May 2 2026 (32 days) respecting each scenario.
+//
+// Standard pattern (Sun = WEEK_OFF, Apr 14 = HOLIDAY, all other days = PRESENT):
+//   W1 Apr 5-11:  6P + 1WO
+//   W2 Apr 12-18: 5P + 1H  + 1WO  ← Apr 14 holiday keeps this at exactly 5P
+//   W3 Apr 19-25: 6P + 1WO
+//   W4 Apr 26-May 2: 6P + 1WO
+
+function generateFnlAttendance(
+  emp: FnlEmpDef
+): Array<{ employeeId: string; storeCode: string; date: Date; status: AttendanceStatus }> {
+  const rows: Array<{ employeeId: string; storeCode: string; date: Date; status: AttendanceStatus }> = [];
+
+  const APR_1  = new Date("2026-04-01");
+  const APR_14 = new Date("2026-04-14"); // Ambedkar Jayanti — HOLIDAY for all
+
+  for (let day = 0; day < 32; day++) { // Apr 1 – May 2
+    const date = addDays(APR_1, day);
+    const dateStr = date.toISOString().slice(0, 10);
+
+    // Mid-period joiner: skip days before their joining date
+    if (date < emp.dateOfJoining) continue;
+    // Exited employee: skip days after exit date
+    if (emp.dateOfExit && date > emp.dateOfExit) continue;
+
+    const weekday = date.getUTCDay(); // 0=Sun, 6=Sat
+    let status: AttendanceStatus;
+
+    switch (emp.attendanceScenario) {
+
+      case "LONG_LEAVE":
+        // Employee on long unauthorised leave — all days LEAVE_UNAPPROVED
+        status = AttendanceStatus.LEAVE_UNAPPROVED;
+        break;
+
+      case "FL05_CLOSED_W3":
+        // Week 3 (Apr 19-25): store TEMPORARILY_CLOSED → WEEK_OFF all days
+        if (dateStr >= "2026-04-19" && dateStr <= "2026-04-25") {
+          status = AttendanceStatus.WEEK_OFF;
+        } else {
+          status = standardStatus(weekday, date, APR_14);
+        }
+        break;
+
+      case "THRESHOLD_TEST": {
+        // E178 (FL01):
+        //   W1 (Apr 5-11): Apr 10 (Fri) = ABSENT → 5P+1A+1WO → ABSENT disqualifies
+        //   All other weeks: standard (W2 gives exactly 5P+1H+1WO = eligible at minimum)
+        if (dateStr === "2026-04-10") {
+          status = AttendanceStatus.ABSENT;
+        } else {
+          status = standardStatus(weekday, date, APR_14);
+        }
+        break;
+      }
+
+      case "LEAVE_APPROVED_TRAP": {
+        // E202 (FL03):
+        //   W3 (Apr 19-25): Apr 25 (Sat) = LEAVE_APPROVED → 5P+1WO+1LA → LA disqualifies
+        //   All other weeks: standard
+        if (dateStr === "2026-04-25") {
+          status = AttendanceStatus.LEAVE_APPROVED;
+        } else {
+          status = standardStatus(weekday, date, APR_14);
+        }
+        break;
+      }
+
+      case "EXITS_WEEK3": {
+        // E203 (FL03): exits 2026-04-21. Days Apr 19(Sun)=WO, Apr 20(P), Apr 21(P).
+        // No records after Apr 21 (handled by dateOfExit check above).
+        status = standardStatus(weekday, date, APR_14);
+        break;
+      }
+
+      case "LATE_DISQUALIFICATION": {
+        // E214 (FL04):
+        //   W4 (Apr 26-May 2): Apr 29 (Wed) = LEAVE_UNAPPROVED → 5P+1LU+1WO → LU disqualifies
+        //   W1-W3: standard
+        if (dateStr === "2026-04-29") {
+          status = AttendanceStatus.LEAVE_UNAPPROVED;
+        } else {
+          status = standardStatus(weekday, date, APR_14);
+        }
+        break;
+      }
+
+      case "MID_PERIOD_JOINER":
+        // E189 (FL02): joined Apr 12 (W2 start).
+        // Days before Apr 12 are skipped above via dateOfJoining guard.
+        status = standardStatus(weekday, date, APR_14);
+        break;
+
+      case "STANDARD":
+      default:
+        status = standardStatus(weekday, date, APR_14);
+        break;
+    }
+
+    rows.push({ employeeId: emp.employeeId, storeCode: emp.storeCode, date, status });
+  }
+
+  return rows;
+}
+
+function standardStatus(weekday: number, date: Date, holiday: Date): AttendanceStatus {
+  if (date.getTime() === holiday.getTime()) return AttendanceStatus.HOLIDAY;
+  if (weekday === 0) return AttendanceStatus.WEEK_OFF; // Sunday
+  return AttendanceStatus.PRESENT;
+}
 
 // ─── Seed main ──────────────────────────────────────────────────────────────
 
@@ -284,6 +517,9 @@ async function main() {
   let employeeCounter = 1;
 
   for (const store of stores) {
+    // FNL stores use explicit employee definitions (fnlEmployeeDefs) — skip here
+    if (store.vertical === Vertical.FNL) continue;
+
     // SM, 2× DM, 12× SA, then vertical-specific extras
     const roles: EmployeeRole[] = [EmployeeRole.SM, EmployeeRole.DM, EmployeeRole.DM];
     for (let i = 0; i < 12; i++) roles.push(EmployeeRole.SA);
@@ -325,6 +561,21 @@ async function main() {
         dateOfJoining: new Date("2023-01-01"),
         dateOfExit: null,
       });
+    });
+  }
+
+  // FNL employees: explicit definitions (E171-E220) with all edge-case scenarios
+  // Non-FNL loop generated E001-E170 (10 stores × 17 employees)
+  for (const emp of fnlEmployeeDefs) {
+    employeeRows.push({
+      employeeId: emp.employeeId,
+      employeeName: emp.employeeName,
+      role: emp.role,
+      storeCode: emp.storeCode,
+      department: null, // FNL has no department dimension
+      payrollStatus: emp.payrollStatus,
+      dateOfJoining: emp.dateOfJoining,
+      dateOfExit: emp.dateOfExit,
     });
   }
 
@@ -565,43 +816,96 @@ async function main() {
 
   await prisma.target.createMany({ data: targetRows });
 
-  // ── 5. Attendance (F&L only) ──────────────────────────────────────────────
+  // ── 4b. Audit log for FL04 Week 1 target — full maker-checker lifecycle ──────
+  // Scenario: maker submits a target that checker rejects ("Target seems too low"),
+  // maker revises and resubmits, checker approves on second pass.
+  // Flow: CREATED → SUBMITTED → REJECTED → CREATED (re-draft) → SUBMITTED → APPROVED
+  const fl04W1Target = await prisma.target.findFirst({
+    where: {
+      storeCode: "FL04",
+      vertical: Vertical.FNL,
+      periodStart: new Date("2026-04-05"),
+    },
+  });
+  if (fl04W1Target) {
+    const auditBase = { entityType: "TARGET" as const, entityId: fl04W1Target.id };
+    await prisma.auditLog.createMany({
+      data: [
+        {
+          ...auditBase,
+          action: "CREATED",
+          oldValue: undefined,
+          newValue: { status: "DRAFT", targetValue: 950_000, note: "Initial draft — first estimate" },
+          performedBy: "maker_user",
+          performedAt: new Date("2026-03-28T09:00:00Z"),
+        },
+        {
+          ...auditBase,
+          action: "SUBMITTED",
+          oldValue: { status: "DRAFT" },
+          newValue: { status: "SUBMITTED", targetValue: 950_000 },
+          performedBy: "maker_user",
+          performedAt: new Date("2026-03-28T09:30:00Z"),
+        },
+        {
+          ...auditBase,
+          action: "REJECTED",
+          oldValue: { status: "SUBMITTED" },
+          newValue: {
+            status: "REJECTED",
+            rejectionReason: "Target seems too low for historical performance — HSR W1 last year was ₹10.2L. Revise upward.",
+          },
+          performedBy: "checker_user",
+          performedAt: new Date("2026-03-29T11:15:00Z"),
+        },
+        {
+          ...auditBase,
+          action: "CREATED",
+          oldValue: { status: "REJECTED", targetValue: 950_000 },
+          newValue: { status: "DRAFT", targetValue: 1_000_000, note: "Revised per checker feedback — raised to ₹10L" },
+          performedBy: "maker_user",
+          performedAt: new Date("2026-03-30T10:00:00Z"),
+        },
+        {
+          ...auditBase,
+          action: "SUBMITTED",
+          oldValue: { status: "DRAFT" },
+          newValue: { status: "SUBMITTED", targetValue: 1_000_000 },
+          performedBy: "maker_user",
+          performedAt: new Date("2026-03-30T10:05:00Z"),
+        },
+        {
+          ...auditBase,
+          action: "APPROVED",
+          oldValue: { status: "SUBMITTED" },
+          newValue: { status: "APPROVED", targetValue: 1_000_000, approvedNote: "Looks right. Approved." },
+          performedBy: "checker_user",
+          performedAt: new Date("2026-03-31T14:00:00Z"),
+        },
+      ],
+    });
+  }
 
-  const fnlEmployees = employeeRows.filter((e) =>
-    stores.find((s) => s.storeCode === e.storeCode)?.vertical === Vertical.FNL,
-  );
+  // ── 5. Attendance (F&L only) — deterministic, controlled per scenario ────────
+  // Each FNL employee's attendance is generated by generateFnlAttendance() which
+  // applies the correct pattern for their attendanceScenario. This ensures all
+  // edge cases (threshold, approved-leave trap, late disqualification, etc.) fire
+  // exactly as designed. No randomness here — every ineligibility reason is tested.
+
   const attendanceRows: Prisma.AttendanceCreateManyInput[] = [];
 
-  for (const emp of fnlEmployees) {
-    const rand = rng(emp.employeeId.charCodeAt(1) * 100 + emp.employeeId.charCodeAt(2));
-    for (let day = 0; day < 32; day++) { // Apr 1 to May 2
-      const date = addDays(new Date("2026-04-01"), day);
-      const weekday = date.getUTCDay(); // 0=Sun, 6=Sat
-
-      let status: AttendanceStatus;
-      if (weekday === 0) {
-        // Sundays: most get WEEK_OFF, some work
-        status = rand() > 0.15 ? AttendanceStatus.WEEK_OFF : AttendanceStatus.PRESENT;
-      } else if (weekday === 6) {
-        // Saturdays: retail, most work
-        status = rand() > 0.85 ? AttendanceStatus.WEEK_OFF : AttendanceStatus.PRESENT;
-      } else {
-        // Weekdays: ~90% present, ~5% approved leave, ~3% absent, ~2% unapproved
-        const roll = rand();
-        if (roll < 0.90) status = AttendanceStatus.PRESENT;
-        else if (roll < 0.95) status = AttendanceStatus.LEAVE_APPROVED;
-        else if (roll < 0.98) status = AttendanceStatus.ABSENT;
-        else status = AttendanceStatus.LEAVE_UNAPPROVED;
-      }
-
+  for (const emp of fnlEmployeeDefs) {
+    const empAttendance = generateFnlAttendance(emp);
+    for (const row of empAttendance) {
       attendanceRows.push({
-        employeeId: emp.employeeId,
-        storeCode: emp.storeCode,
-        date,
-        status,
+        employeeId: row.employeeId,
+        storeCode: row.storeCode,
+        date: row.date,
+        status: row.status,
       });
     }
   }
+
   await prisma.attendance.createMany({ data: attendanceRows, skipDuplicates: true });
 
   // ── 6. Sales Transactions ─────────────────────────────────────────────────
@@ -763,53 +1067,93 @@ async function main() {
     }
   }
 
-  // ── 6c. F&L — weekly target-driven sales ──────────────────────────────────
+  // ── 6c. F&L — exact-sum weekly sales ─────────────────────────────────────────
+  // Each store/week generates exactly `desiredSales` in gross_amount so that
+  // achievement percentages match the edge-case design precisely.
+  //
+  // Structure per week (40 transactions):
+  //   1  boundary transaction on Sunday (week start) — tests week-boundary inclusion
+  //   1  boundary transaction on Saturday (week end)  — tests week-boundary inclusion
+  //   2  unattributed (employeeId = NULL)              — count toward store total
+  //   3  channel = ONLINE                              — FNL includes online in total
+  //  33  regular attributed OFFLINE transactions
+  //   1  "adjustment" final transaction to hit exact desiredSales total
+  //
+  // FL05 Week 3 (TEMPORARILY_CLOSED): desiredSales = 0 → no transactions generated.
+
+  const fnlBrands = ["Netplay", "Avaasa", "DNMX", "Rio", "Performax", "YouWeCan", "Forca"];
+  const fnlSeq = { n: 1 }; // local sequence for FNL transaction IDs
 
   for (const store of stores.filter((s) => s.vertical === Vertical.FNL)) {
     const weeks = fnlWeeklyPlans[store.storeCode];
     if (!weeks) continue;
-    const employeeIds = saByStore.get(store.storeCode) ?? [];
+    // ACTIVE SAs only for attributed transactions
+    const activeSaIds = fnlEmployeeDefs
+      .filter((e) => e.storeCode === store.storeCode && e.role === EmployeeRole.SA && e.payrollStatus === PayrollStatus.ACTIVE)
+      .map((e) => e.employeeId);
 
-    for (const w of weeks) {
-      const weekDays = 7;
+    for (let wi = 0; wi < weeks.length; wi++) {
+      const w = weeks[wi];
+      if (w.desiredSales === 0) continue; // CLOSED week — no transactions
+
+      const weekLabel = `W${wi + 1}`;
       let cumSales = 0;
-      let txCount = 0;
 
-      while (cumSales < w.desiredSales && txCount < 600) {
-        const qty = 1 + Math.floor(rand() * 2);
-        const unitPrice = 800 + Math.round(rand() * 4200);
-        const grossAmount = qty * unitPrice;
+      // Helper to push one FNL transaction
+      const pushTx = (
+        date: Date,
+        grossAmount: number,
+        empId: string | null,
+        ch: typeof Channel.OFFLINE | typeof Channel.ONLINE,
+      ) => {
         const tax = Math.round(grossAmount * 0.12);
-
-        // Distribute transactions across the week days
-        const dayOffset = Math.floor(rand() * weekDays);
-        const txDate = addDays(w.start, dayOffset);
-
-        // ~10% ONLINE (excluded from incentive since F&L engine doesn't filter channel,
-        // but realistic for reporting)
-        const channel = rand() > 0.90 ? Channel.ONLINE : Channel.OFFLINE;
-
         salesRows.push({
-          transactionId: nextId("TXF"),
-          transactionDate: txDate,
+          transactionId: `TXF-${store.storeCode}-${weekLabel}-${String(fnlSeq.n++).padStart(3, "0")}`,
+          transactionDate: date,
           storeCode: store.storeCode,
           vertical: Vertical.FNL,
           storeFormat: store.storeFormat,
-          employeeId: employeeIds.length ? employeeIds[Math.floor(rand() * employeeIds.length)] : null,
-          department: "APPAREL",
-          articleCode: `FNL${Math.floor(100000 + rand() * 899999)}`,
-          productFamilyCode: "FNL01",
-          brand: ["Netplay", "Avaasa", "DNMX", "Rio", "Performax"][Math.floor(rand() * 5)],
-          quantity: qty,
+          employeeId: empId,
+          department: null,
+          articleCode: `FNL${Math.floor(100_000 + rand() * 899_999)}`,
+          productFamilyCode: null,
+          brand: fnlBrands[Math.floor(rand() * fnlBrands.length)],
+          quantity: 1 + Math.floor(rand() * 2),
           grossAmount,
           taxAmount: tax,
           totalAmount: grossAmount + tax,
           transactionType: TransactionType.NORMAL,
-          channel,
+          channel: ch,
         });
-
         cumSales += grossAmount;
-        txCount++;
+      };
+
+      const sunday   = w.start;                    // boundary day 1
+      const saturday = addDays(w.start, 6);         // boundary day 2 (= w.end)
+
+      // 1. Sunday boundary transaction
+      pushTx(sunday, 1_500 + Math.round(rand() * 3_000), activeSaIds[0] ?? null, Channel.OFFLINE);
+      // 2. Saturday boundary transaction
+      pushTx(saturday, 1_500 + Math.round(rand() * 3_000), activeSaIds[activeSaIds.length - 1] ?? null, Channel.OFFLINE);
+      // 3–4. Two unattributed (NULL employee) transactions
+      pushTx(addDays(w.start, 2), 2_000 + Math.round(rand() * 4_000), null, Channel.OFFLINE);
+      pushTx(addDays(w.start, 4), 2_000 + Math.round(rand() * 4_000), null, Channel.OFFLINE);
+      // 5–7. Three ONLINE transactions (FNL engine includes channel=ONLINE in gross total)
+      for (let o = 0; o < 3; o++) {
+        const dayOff = 1 + Math.floor(rand() * 5);
+        pushTx(addDays(w.start, dayOff), 1_800 + Math.round(rand() * 3_500), activeSaIds[o % activeSaIds.length] ?? null, Channel.ONLINE);
+      }
+      // 8–40. 33 regular attributed OFFLINE transactions
+      for (let t = 0; t < 33; t++) {
+        const dayOff = Math.floor(rand() * 7);
+        const empId  = activeSaIds[Math.floor(rand() * activeSaIds.length)] ?? null;
+        const gross  = 1_200 + Math.round(rand() * 5_800);
+        pushTx(addDays(w.start, dayOff), gross, empId, Channel.OFFLINE);
+      }
+      // 41. Adjustment transaction to hit exactly desiredSales
+      const remaining = w.desiredSales - cumSales;
+      if (remaining > 0) {
+        pushTx(addDays(w.start, 3), remaining, activeSaIds[Math.floor(rand() * activeSaIds.length)] ?? null, Channel.OFFLINE);
       }
     }
   }
@@ -825,12 +1169,14 @@ async function main() {
   const grocTxns = salesRows.filter((r) => r.vertical === Vertical.GROCERY).length;
   const fnlTxns = salesRows.filter((r) => r.vertical === Vertical.FNL).length;
 
+  const fnlAttendanceRows = attendanceRows.length;
   console.log(`Seed complete:`);
   console.log(`  Stores: ${stores.length} (${elecStores.length} elec, ${grocStores.length} groc, ${fnlStores.length} F&L)`);
-  console.log(`  Employees: ${employeeRows.length}`);
-  console.log(`  Sales: ${salesRows.length} (${elecTxns} elec, ${grocTxns} groc, ${fnlTxns} F&L)`);
-  console.log(`  Targets: ${targetRows.length}`);
-  console.log(`  Attendance: ${attendanceRows.length}`);
+  console.log(`  Employees: ${employeeRows.length} (${fnlEmployeeDefs.length} FNL with explicit edge-case scenarios)`);
+  console.log(`  Sales: ${salesRows.length} (${elecTxns} elec, ${grocTxns} groc, ${fnlTxns} F&L — FNL sums exact)`);
+  console.log(`  Targets: ${targetRows.length} (FNL: 20 weekly)`);
+  console.log(`  Attendance: ${fnlAttendanceRows} FNL records (deterministic scenarios)`);
+  console.log(`  Audit log: FL04 W1 target — 6-entry DRAFT→SUBMITTED→REJECTED→DRAFT→SUBMITTED→APPROVED`);
 }
 
 main()

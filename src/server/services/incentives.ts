@@ -286,6 +286,13 @@ async function getStoreDetail(params: Params) {
   const storeAchievementPct =
     totalStoreTarget > 0 ? Math.round((totalStoreSales / totalStoreTarget) * 1000) / 10 : 0;
 
+  // Extract totalPiecesSold from grocery ledger calculationDetails
+  let totalPiecesSold = 0;
+  if (store.vertical === "GROCERY" && ledger.length > 0) {
+    const details = ledger[0].calculationDetails as Record<string, unknown> | null;
+    totalPiecesSold = Number(details?.totalPieces) || 0;
+  }
+
   return {
     level: "storeDetail" as const,
     summary: {
@@ -306,6 +313,8 @@ async function getStoreDetail(params: Params) {
       storeAchievementPct,
       employeeCount: employees.length,
       totalEmployees: store.employees.length,
+      /** Grocery: total campaign-eligible pieces sold */
+      totalPiecesSold,
     },
     departments,
     employees,

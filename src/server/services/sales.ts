@@ -78,6 +78,11 @@ type SlabRow = {
   incentivePerUnit: unknown;
 };
 
+// Grocery campaign rate cache: storeCode → { rate, employeeCount }
+type GroceryRateInfo = { rate: number; employeeCount: number };
+let groceryRateCache: Map<string, GroceryRateInfo> | null = null;
+let groceryRateCacheExpiry = 0;
+
 let cachedSlabs: SlabRow[] | null = null;
 let slabCacheExpiry = 0;
 const SLAB_CACHE_TTL_MS = 60_000;
@@ -174,6 +179,28 @@ export async function listSales(filters: SalesFilters) {
 
   const slabs = await getElectronicsSlabs();
 
+  // Build grocery rate cache from ledger calculationDetails (rate & employeeCount per store)
+  const hasGrocery = rows.some((r) => r.vertical === Vertical.GROCERY);
+  if (hasGrocery && (!groceryRateCache || Date.now() >= groceryRateCacheExpiry)) {
+    groceryRateCache = new Map();
+    const groceryLedger = await db.incentiveLedger.findMany({
+      where: { vertical: Vertical.GROCERY },
+      select: { storeCode: true, calculationDetails: true },
+      distinct: ["storeCode"],
+      orderBy: { calculatedAt: "desc" },
+    });
+    for (const row of groceryLedger) {
+      const details = row.calculationDetails as Record<string, unknown> | null;
+      if (details) {
+        groceryRateCache.set(row.storeCode, {
+          rate: Number(details.rate) || 0,
+          employeeCount: Number(details.employeeCount) || 1,
+        });
+      }
+    }
+    groceryRateCacheExpiry = Date.now() + SLAB_CACHE_TTL_MS;
+  }
+
   const mapped = rows.map((row) => {
     const gross = asNumber(row.grossAmount);
     let incentiveAmount = 0;
@@ -187,7 +214,14 @@ export async function listSales(filters: SalesFilters) {
         incentiveLabel = incentiveAmount > 0 ? `₹${new Intl.NumberFormat("en-IN").format(incentiveAmount)}` : "—";
       }
     } else if (row.vertical === Vertical.GROCERY) {
-      incentiveLabel = "Campaign";
+      const rateInfo = groceryRateCache?.get(row.storeCode);
+      if (rateInfo && rateInfo.rate > 0) {
+        // Per-transaction contribution: quantity × rate (store-level), ÷ employeeCount for individual share
+        incentiveAmount = Math.round((row.quantity * rateInfo.rate) / rateInfo.employeeCount);
+        incentiveLabel = incentiveAmount > 0 ? `₹${new Intl.NumberFormat("en-IN").format(incentiveAmount)}` : "Below target";
+      } else {
+        incentiveLabel = "Below target";
+      }
     } else {
       incentiveLabel = "Weekly Pool";
     }
