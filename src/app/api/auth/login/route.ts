@@ -55,6 +55,10 @@ export async function POST(request: Request) {
         storeCode: credential.employee.storeCode,
         storeName: credential.employee.store.storeName,
         vertical: credential.employee.store.vertical,
+        storeFormat: credential.employee.store.storeFormat,
+        city: credential.employee.store.city,
+        state: credential.employee.store.state,
+        storeStatus: credential.employee.store.storeStatus,
       },
     });
   } catch (error) {

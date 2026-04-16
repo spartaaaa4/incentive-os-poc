@@ -293,6 +293,49 @@ async function getStoreDetail(params: Params) {
     totalPiecesSold = Number(details?.totalPieces) || 0;
   }
 
+  // FNL week breakdown — aggregate ledger rows by periodStart/periodEnd
+  let weekPayouts: Array<{
+    weekStart: string; weekEnd: string;
+    weeklySalesTarget: number; actualWeeklyGrossSales: number;
+    storeQualifies: boolean; myPayout: number; totalStoreIncentive: number;
+  }> = [];
+
+  if (store.vertical === "FNL" && ledger.length > 0) {
+    type WeekBucket = { start: string; end: string; target: number; actual: number; payout: number };
+    const weekMap = new Map<string, WeekBucket>();
+    for (const r of ledger) {
+      const key = r.periodStart.toISOString().slice(0, 10);
+      const existing = weekMap.get(key);
+      const details = r.calculationDetails as Record<string, unknown> | null;
+      const rowTarget = Number(details?.targetValue ?? 0);
+      const rowActual = Number(details?.actualSales ?? 0);
+      weekMap.set(key, {
+        start: key,
+        end: r.periodEnd.toISOString().slice(0, 10),
+        // Target and actual are store-wide (same across employees), so take max
+        target: Math.max(existing?.target ?? 0, rowTarget),
+        actual: Math.max(existing?.actual ?? 0, rowActual),
+        payout: (existing?.payout ?? 0) + asNumber(r.finalIncentive),
+      });
+    }
+    weekPayouts = [...weekMap.values()]
+      .filter((w) => {
+        // Filter out monthly aggregates (>10 day span)
+        const span = (new Date(w.end).getTime() - new Date(w.start).getTime()) / (1000 * 60 * 60 * 24);
+        return span <= 10;
+      })
+      .sort((a, b) => a.start.localeCompare(b.start))
+      .map((w) => ({
+        weekStart: w.start,
+        weekEnd: w.end,
+        weeklySalesTarget: Math.round(w.target),
+        actualWeeklyGrossSales: Math.round(w.actual),
+        storeQualifies: w.actual >= w.target,
+        myPayout: Math.round(w.payout),
+        totalStoreIncentive: Math.round(w.payout),
+      }));
+  }
+
   return {
     level: "storeDetail" as const,
     summary: {
@@ -318,6 +361,7 @@ async function getStoreDetail(params: Params) {
     },
     departments,
     employees,
+    ...(weekPayouts.length > 0 && { weekPayouts }),
   };
 }
 
