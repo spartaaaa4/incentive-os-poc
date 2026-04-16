@@ -591,9 +591,7 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
     where: { employeeId: employee.employeeId, date: { gte: latestRow.periodStart, lte: latestRow.periodEnd } },
   });
   const presentDays = attendance.filter((a) => a.status === "PRESENT").length;
-  const disqualifyingStatuses = new Set<string>(["ABSENT", "LEAVE_APPROVED", "LEAVE_UNAPPROVED"]);
-  const disqualifying = attendance.filter((a) => disqualifyingStatuses.has(a.status)).length;
-  const attendanceEligible = presentDays >= 5 && disqualifying === 0;
+  const attendanceEligible = presentDays >= 5;
 
   const eligibleSAs = storeEmployees.filter((e: { role: string }) => e.role === "SA").length;
 
