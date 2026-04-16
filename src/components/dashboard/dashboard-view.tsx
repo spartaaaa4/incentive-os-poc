@@ -295,6 +295,7 @@ export function DashboardView() {
   const performerColumns: ColumnsType<DashboardResponse["topPerformers"][number]> = [
     {
       title: "Rank",
+      key: "rank",
       dataIndex: "rank",
       width: 72,
       render: (rank: number) => (
@@ -303,8 +304,8 @@ export function DashboardView() {
         </Tag>
       ),
     },
-    { title: "Name", dataIndex: "employeeName" },
-    { title: "Role", dataIndex: "role" },
+    { title: "Name", key: "employeeName", dataIndex: "employeeName" },
+    { title: "Role", key: "role", dataIndex: "role" },
     {
       title: "Store",
       key: "store",
@@ -317,6 +318,7 @@ export function DashboardView() {
     },
     {
       title: "Incentive",
+      key: "incentive",
       dataIndex: "incentive",
       align: "right",
       render: (v: number) => <Typography.Text strong style={{ color: "#059669" }}>{formatInr(v)}</Typography.Text>,
