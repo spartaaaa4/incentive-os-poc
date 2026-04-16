@@ -23,8 +23,8 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  Area, CartesianGrid, Line, ComposedChart,
+  BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  Area, CartesianGrid, Legend, Line, ComposedChart,
 } from "recharts";
 import { Vertical } from "@/lib/constants";
 import { formatInr, formatNumber, formatInrScaleHint, pctDelta } from "@/lib/format";
@@ -66,7 +66,7 @@ type DashboardResponse = {
     belowThresholdList: Array<{ storeCode: string; storeName: string; achievementPct: number }>;
   };
   verticalBreakdown: VerticalBreakdown[];
-  achievementDistribution: Array<{ bucket: string; count: number }>;
+  achievementDistribution: Array<{ bucket: string; count: number; stores?: Array<{ storeCode: string; storeName: string; vertical: string; sales: number; target: number; achievementPct: number }> }>;
   dailySalesTrend: Array<{ date: string; label: string; sales: number; transactions: number; targetPace: number }>;
   topPerformers: Array<{
     rank: number;
@@ -218,8 +218,9 @@ export function DashboardView() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [prevStats, setPrevStats] = useState<{ totalSalesMtd: number; totalIncentiveMtd: number } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<Tab>("performers");
+  const [tab, setTab] = useState<Tab>("drilldown");
   const [overviewCollapsed, setOverviewCollapsed] = useState(false);
+  const [selectedBand, setSelectedBand] = useState<string | null>(null);
 
   const drilldownRef = useRef<{ drillToStore: (storeCode: string, storeName: string) => void } | null>(null);
 
@@ -474,6 +475,55 @@ export function DashboardView() {
                     </Col>
                   </Row>
 
+                  {/* Target vs Achieved card */}
+                  <Card size="small" styles={{ body: { padding: 16 } }}>
+                    <Flex align="center" gap={12} wrap="wrap" style={{ marginBottom: 10 }}>
+                      <div style={{ borderRadius: 8, padding: 6, background: "#e0e7ff", color: "#4f46e5" }}>
+                        <Target size={18} />
+                      </div>
+                      <Typography.Text type="secondary" style={{ fontSize: 11, textTransform: "uppercase" }}>
+                        Target vs Achieved (MTD)
+                      </Typography.Text>
+                    </Flex>
+                    <Row gutter={[24, 16]} align="middle">
+                      <Col xs={24} sm={8}>
+                        <Statistic
+                          title="Monthly target"
+                          value={data.stats.totalTarget}
+                          formatter={(v) => formatInr(Number(v))}
+                          valueStyle={{ fontSize: 20, fontWeight: 700, color: "#64748b" }}
+                        />
+                      </Col>
+                      <Col xs={24} sm={8}>
+                        <Statistic
+                          title="Actual sales (MTD)"
+                          value={data.stats.totalSalesMtd}
+                          formatter={(v) => formatInr(Number(v))}
+                          valueStyle={{ fontSize: 20, fontWeight: 700, color: data.stats.totalSalesMtd >= data.stats.totalTarget ? "#047857" : "#b45309" }}
+                        />
+                      </Col>
+                      <Col xs={24} sm={8}>
+                        <Flex vertical gap={4}>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Achievement: <Typography.Text strong style={{ color: data.stats.avgAchievementPct >= 100 ? "#047857" : "#b45309" }}>
+                              {data.stats.totalTarget > 0 ? Math.round((data.stats.totalSalesMtd / data.stats.totalTarget) * 100) : 0}%
+                            </Typography.Text>
+                          </Typography.Text>
+                          <Progress
+                            percent={data.stats.totalTarget > 0 ? Math.min(100, Math.round((data.stats.totalSalesMtd / data.stats.totalTarget) * 100)) : 0}
+                            strokeColor={data.stats.totalSalesMtd >= data.stats.totalTarget ? "#10b981" : "#f59e0b"}
+                            showInfo={false}
+                          />
+                          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                            {data.stats.totalSalesMtd >= data.stats.totalTarget
+                              ? `Exceeded target by ${formatInr(data.stats.totalSalesMtd - data.stats.totalTarget)}`
+                              : `${formatInr(data.stats.totalTarget - data.stats.totalSalesMtd)} remaining to hit target`}
+                          </Typography.Text>
+                        </Flex>
+                      </Col>
+                    </Row>
+                  </Card>
+
                   <Card size="small">
                     <Flex align="center" gap={12} wrap="wrap">
                       <Users size={14} style={{ color: "#94a3b8" }} />
@@ -543,21 +593,68 @@ export function DashboardView() {
 
                   <Row gutter={[16, 16]}>
                     <Col xs={24} lg={12}>
-                      <Card title="Stores by achievement band" size="small" styles={{ header: { minHeight: 48 } }}>
+                      <Card title="Stores by achievement band" size="small" styles={{ header: { minHeight: 48 } }} extra={selectedBand && <Button type="link" size="small" onClick={() => setSelectedBand(null)}>Close drill-down</Button>}>
                         <Typography.Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 12, fontSize: 12 }}>
-                          Count of stores in each sales-vs-target band for the selected month
+                          Count of stores in each sales-vs-target band for the selected month. <strong>Click a bar</strong> to see stores in that band.
                         </Typography.Paragraph>
                         <ResponsiveContainer width="100%" height={220}>
-                          <BarChart data={data.achievementDistribution} margin={{ top: 8, right: 8, bottom: 0, left: -20 }}>
+                          <BarChart
+                            data={data.achievementDistribution}
+                            margin={{ top: 8, right: 8, bottom: 0, left: -20 }}
+                            onClick={(state) => {
+                              if (state?.activeLabel) setSelectedBand(String(state.activeLabel) === selectedBand ? null : String(state.activeLabel));
+                            }}
+                            style={{ cursor: "pointer" }}
+                          >
                             <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
                             <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                             <Tooltip
                               contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}
                               formatter={(value) => [String(value), "Stores"]}
                             />
-                            <Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                            <Bar
+                              dataKey="count"
+                              radius={[4, 4, 0, 0]}
+                              cursor="pointer"
+                            >
+                              {data.achievementDistribution.map((entry) => (
+                                <Cell key={entry.bucket} fill={entry.bucket === selectedBand ? "#4338ca" : "#6366f1"} />
+                              ))}
+                            </Bar>
                           </BarChart>
                         </ResponsiveContainer>
+                        {selectedBand && (() => {
+                          const band = data.achievementDistribution.find((b) => b.bucket === selectedBand);
+                          const stores = band?.stores ?? [];
+                          return (
+                            <div style={{ marginTop: 16, borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+                              <Flex justify="space-between" align="center" style={{ marginBottom: 12 }}>
+                                <Typography.Text strong>
+                                  {stores.length} store{stores.length !== 1 ? "s" : ""} in {selectedBand} band
+                                </Typography.Text>
+                                <Button type="text" size="small" icon={<ChevronUp size={14} />} onClick={() => setSelectedBand(null)}>Close</Button>
+                              </Flex>
+                              {stores.length === 0 ? (
+                                <Typography.Text type="secondary">No stores in this band.</Typography.Text>
+                              ) : (
+                                <Table
+                                  rowKey="storeCode"
+                                  size="small"
+                                  pagination={false}
+                                  scroll={{ x: "max-content" }}
+                                  dataSource={stores}
+                                  columns={[
+                                    { title: "Store", key: "store", render: (_: unknown, r: { storeName: string; storeCode: string; vertical: string; sales: number; target: number; achievementPct: number }) => <><Typography.Text strong>{r.storeName}</Typography.Text><br /><Typography.Text type="secondary" code style={{ fontSize: 11 }}>{r.storeCode}</Typography.Text></> },
+                                    { title: "Vertical", dataIndex: "vertical", width: 100 },
+                                    { title: "Actual Sales", dataIndex: "sales", align: "right" as const, render: (v: number) => formatInr(v) },
+                                    { title: "Target", dataIndex: "target", align: "right" as const, render: (v: number) => formatInr(v) },
+                                    { title: "Achievement", dataIndex: "achievementPct", align: "center" as const, render: (pct: number) => <Flex align="center" gap={6} justify="center"><Progress percent={Math.min(100, Math.round((pct / 150) * 100))} showInfo={false} strokeColor={pct >= 100 ? "#10b981" : pct >= 85 ? "#f59e0b" : "#ef4444"} trailColor="#f1f5f9" size="small" style={{ width: 60, marginBottom: 0 }} /><Typography.Text>{pct}%</Typography.Text></Flex> },
+                                  ]}
+                                />
+                              )}
+                            </div>
+                          );
+                        })()}
                       </Card>
                     </Col>
                     <Col xs={24} lg={12}>
@@ -581,8 +678,14 @@ export function DashboardView() {
                               formatter={(value, name) => [formatInr(Number(value)), name === "sales" ? "Actual sales" : "Target pace (cumulative)"]}
                               labelFormatter={(label) => String(label)}
                             />
-                            <Area type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2} fill="url(#salesGrad)" />
-                            <Line type="monotone" dataKey="targetPace" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="6 3" dot={false} />
+                            <Legend
+                              verticalAlign="top"
+                              align="right"
+                              wrapperStyle={{ fontSize: 11, paddingBottom: 8 }}
+                              formatter={(value: string) => <span style={{ color: "#64748b" }}>{value}</span>}
+                            />
+                            <Area type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2} fill="url(#salesGrad)" name="Actual Sales" />
+                            <Line type="monotone" dataKey="targetPace" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="Target Pace (Cumulative)" />
                           </ComposedChart>
                         </ResponsiveContainer>
                       </Card>
@@ -645,6 +748,19 @@ export function DashboardView() {
                 onChange={(k) => setTab(k as Tab)}
                 items={[
                   {
+                    key: "drilldown",
+                    label: "City & Store",
+                    children: (
+                      <IncentiveDrilldown
+                        ref={drilldownRef}
+                        vertical={selected === "ALL" ? "" : selected}
+                        month={month}
+                        onEnterCityStores={handleEnterCityStores}
+                        onReturnToDrilldownRoot={handleReturnDrilldownRoot}
+                      />
+                    ),
+                  },
+                  {
                     key: "performers",
                     label: "Top performers",
                     children: (
@@ -657,19 +773,6 @@ export function DashboardView() {
                           size="small"
                         />
                       </Card>
-                    ),
-                  },
-                  {
-                    key: "drilldown",
-                    label: "Stores & people (detail)",
-                    children: (
-                      <IncentiveDrilldown
-                        ref={drilldownRef}
-                        vertical={selected === "ALL" ? "" : selected}
-                        month={month}
-                        onEnterCityStores={handleEnterCityStores}
-                        onReturnToDrilldownRoot={handleReturnDrilldownRoot}
-                      />
                     ),
                   },
                 ]}
