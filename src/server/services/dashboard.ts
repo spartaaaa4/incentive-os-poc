@@ -173,15 +173,11 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
   }));
 
   const totalFinal = asNumber(totalIncentiveAgg._sum.finalIncentive);
-  let potentialFromBelow = 0;
-  for (const store of storeRows) {
-    const base = baseByStore.get(store.storeCode) ?? 0;
-    const earned = incByStore.get(store.storeCode) ?? 0;
-    if (base > 0 && earned === 0) {
-      potentialFromBelow += base;
-    }
-  }
-  const potentialIncentive = totalFinal + potentialFromBelow;
+  const totalBase = asNumber(totalIncentiveAgg._sum.baseIncentive);
+  // Potential = total base incentive (what everyone earns at 100% multiplier).
+  // This captures ALL upside — stores at 0% multiplier AND stores at partial
+  // multipliers (50%, 80%) whose base > earned.
+  const potentialIncentive = Math.max(totalBase, totalFinal);
 
   // Last calculated timestamp (most recent ledger entry)
   const lastLedgerRow = await db.incentiveLedger.findFirst({

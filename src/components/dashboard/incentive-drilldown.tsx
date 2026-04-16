@@ -147,6 +147,14 @@ export const IncentiveDrilldown = forwardRef<
           {!loading && data && level === "store" && <StoreView data={data} onDrill={drillTo} />}
           {!loading && data && level === "storeDetail" && <StoreDetailView data={data} onDrill={drillTo} />}
           {!loading && data && level === "employeeDetail" && <EmployeeDetailView data={data} />}
+          {!loading && data && !["city", "store", "storeDetail", "employeeDetail"].includes(level ?? "") && (
+            <Typography.Text type="secondary">
+              No data available for this view{level ? ` (level: ${level})` : ""}. Try selecting a different month or vertical.
+            </Typography.Text>
+          )}
+          {!loading && !data && (
+            <Typography.Text type="secondary">Could not load drilldown data. Check filters and try again.</Typography.Text>
+          )}
         </div>
       </Spin>
     </Space>
