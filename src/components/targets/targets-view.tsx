@@ -2,9 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
-import { Download, Upload, X, FileSpreadsheet, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Download, Upload, X, FileSpreadsheet, AlertCircle, CheckCircle2, Search, RotateCcw } from "lucide-react";
 import { formatInr } from "@/lib/format";
 import { StatusBadge } from "@/components/ui/status-badge";
+
+function formatDate(iso: string): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}-${m}-${y}`;
+}
+
+const selectClass = "rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors";
+const inputClass = "rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors w-[130px]";
 
 type TargetRow = {
   id: number;
@@ -32,10 +41,29 @@ const expectedColumns: Record<Tab, string[]> = {
   "F&L": ["storeCode", "vertical", "targetValue", "periodType", "periodStart", "periodEnd"],
 };
 
+type TargetFilters = {
+  search: string;
+  storeCode: string;
+  state: string;
+  department: string;
+  productFamilyName: string;
+  targetValueMin: string;
+  targetValueMax: string;
+  periodFrom: string;
+  periodTo: string;
+};
+
+const emptyTargetFilters: TargetFilters = {
+  search: "", storeCode: "", state: "", department: "", productFamilyName: "",
+  targetValueMin: "", targetValueMax: "", periodFrom: "", periodTo: "",
+};
+
 export function TargetsView() {
   const [active, setActive] = useState<Tab>("Electronics");
   const [rows, setRows] = useState<TargetRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [filters, setFilters] = useState<TargetFilters>(emptyTargetFilters);
+  const [appliedFilters, setAppliedFilters] = useState<TargetFilters>(emptyTargetFilters);
   const [showUpload, setShowUpload] = useState(false);
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([]);
   const [csvErrors, setCsvErrors] = useState<string[]>([]);
@@ -54,6 +82,66 @@ export function TargetsView() {
   }, [active]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Reset filters when tab changes
+  useEffect(() => {
+    setFilters(emptyTargetFilters);
+    setAppliedFilters(emptyTargetFilters);
+  }, [active]);
+
+  // Derive unique filter options from all loaded rows
+  const storeOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    rows.forEach((r) => { if (!seen.has(r.storeCode)) seen.set(r.storeCode, r.storeName); });
+    return Array.from(seen.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [rows]);
+
+  const stateOptions = useMemo(() => {
+    return [...new Set(rows.map((r) => r.state).filter(Boolean))].sort();
+  }, [rows]);
+
+  const departmentOptions = useMemo(() => {
+    return [...new Set(rows.map((r) => r.department).filter(Boolean) as string[])].sort();
+  }, [rows]);
+
+  const familyNameOptions = useMemo(() => {
+    return [...new Set(rows.map((r) => r.productFamilyName).filter(Boolean) as string[])].sort();
+  }, [rows]);
+
+  // Client-side filtered rows
+  const filteredRows = useMemo(() => {
+    const f = appliedFilters;
+    const minVal = f.targetValueMin ? parseFloat(f.targetValueMin) : null;
+    const maxVal = f.targetValueMax ? parseFloat(f.targetValueMax) : null;
+    return rows.filter((r) => {
+      if (f.storeCode && r.storeCode !== f.storeCode) return false;
+      if (f.state && r.state !== f.state) return false;
+      if (f.department && r.department !== f.department) return false;
+      if (f.productFamilyName && r.productFamilyName !== f.productFamilyName) return false;
+      if (minVal !== null && r.targetValue < minVal) return false;
+      if (maxVal !== null && r.targetValue > maxVal) return false;
+      if (f.periodFrom && r.periodEnd < f.periodFrom) return false;
+      if (f.periodTo && r.periodStart > f.periodTo) return false;
+      if (f.search) {
+        const q = f.search.toLowerCase();
+        const match =
+          r.storeCode.toLowerCase().includes(q) ||
+          r.storeName.toLowerCase().includes(q) ||
+          r.state.toLowerCase().includes(q) ||
+          (r.department ?? "").toLowerCase().includes(q) ||
+          (r.productFamilyName ?? "").toLowerCase().includes(q) ||
+          (r.productFamilyCode ?? "").toLowerCase().includes(q);
+        if (!match) return false;
+      }
+      return true;
+    });
+  }, [rows, appliedFilters]);
+
+  const hasActiveFilters = Object.values(appliedFilters).some(Boolean);
+
+  const handleApply = () => setAppliedFilters({ ...filters });
+  const handleReset = () => { setFilters(emptyTargetFilters); setAppliedFilters(emptyTargetFilters); };
+  const updateFilter = (key: keyof TargetFilters, value: string) => setFilters((prev) => ({ ...prev, [key]: value }));
 
   const handleFile = async (file: File) => {
     setFileName(file.name);
@@ -117,6 +205,7 @@ export function TargetsView() {
 
   return (
     <div className="space-y-4">
+      {/* Tab bar + upload */}
       <div className="flex items-center justify-between">
         <div className="flex gap-2">
           {tabs.map((t) => (
@@ -132,6 +221,114 @@ export function TargetsView() {
         </button>
       </div>
 
+      {/* Filter bar */}
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Store</label>
+            <select value={filters.storeCode} onChange={(e) => updateFilter("storeCode", e.target.value)} className={selectClass}>
+              <option value="">All Stores</option>
+              {storeOptions.map(([code, name]) => (
+                <option key={code} value={code}>{code} — {name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">State</label>
+            <select value={filters.state} onChange={(e) => updateFilter("state", e.target.value)} className={selectClass}>
+              <option value="">All States</option>
+              {stateOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+
+          {active === "Electronics" && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Department</label>
+              <select value={filters.department} onChange={(e) => updateFilter("department", e.target.value)} className={selectClass}>
+                <option value="">All Departments</option>
+                {departmentOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+          )}
+
+          {active === "Electronics" && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Family Name</label>
+              <select value={filters.productFamilyName} onChange={(e) => updateFilter("productFamilyName", e.target.value)} className={selectClass}>
+                <option value="">All Families</option>
+                {familyNameOptions.map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Target Min (₹)</label>
+            <input type="number" placeholder="0" value={filters.targetValueMin} onChange={(e) => updateFilter("targetValueMin", e.target.value)} className={inputClass} />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Target Max (₹)</label>
+            <input type="number" placeholder="∞" value={filters.targetValueMax} onChange={(e) => updateFilter("targetValueMax", e.target.value)} className={inputClass} />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Period From</label>
+            <input type="date" value={filters.periodFrom} onChange={(e) => updateFilter("periodFrom", e.target.value)} className={inputClass} />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Period To</label>
+            <input type="date" value={filters.periodTo} onChange={(e) => updateFilter("periodTo", e.target.value)} className={inputClass} />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Search</label>
+            <input
+              type="text"
+              placeholder="Store / State / Dept / Family"
+              value={filters.search}
+              onChange={(e) => updateFilter("search", e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors w-[200px]"
+            />
+          </div>
+
+          <button onClick={handleApply}
+            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+            <Search size={14} /> Apply
+          </button>
+
+          {hasActiveFilters && (
+            <button onClick={handleReset}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+              <RotateCcw size={14} /> Reset
+            </button>
+          )}
+        </div>
+
+        <div className="mt-3 flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+          <span className="font-medium text-slate-700">
+            {filteredRows.length === 0 ? "No results" : `${filteredRows.length.toLocaleString()} record${filteredRows.length !== 1 ? "s" : ""}`}
+            {hasActiveFilters && rows.length !== filteredRows.length && ` (filtered from ${rows.length.toLocaleString()})`}
+          </span>
+          {hasActiveFilters && (
+            <>
+              {appliedFilters.storeCode && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.storeCode}</span>}
+              {appliedFilters.state && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.state}</span>}
+              {appliedFilters.department && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.department}</span>}
+              {appliedFilters.productFamilyName && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.productFamilyName}</span>}
+              {appliedFilters.targetValueMin && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">Min ₹{appliedFilters.targetValueMin}</span>}
+              {appliedFilters.targetValueMax && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">Max ₹{appliedFilters.targetValueMax}</span>}
+              {appliedFilters.periodFrom && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">From {formatDate(appliedFilters.periodFrom)}</span>}
+              {appliedFilters.periodTo && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">To {formatDate(appliedFilters.periodTo)}</span>}
+              {appliedFilters.search && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">&quot;{appliedFilters.search}&quot;</span>}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Data table */}
       <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
@@ -141,26 +338,26 @@ export function TargetsView() {
               {active === "Electronics" && <th className="p-3 text-left">Department</th>}
               {active === "Electronics" && <th className="p-3 text-left">Family Code</th>}
               {active === "Electronics" && <th className="p-3 text-left">Family Name</th>}
-              <th className="p-3 text-right">Target Value</th>
+              <th className="p-3 text-left">Target Value</th>
               <th className="p-3 text-left">Period</th>
               <th className="p-3 text-left">Status</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-t border-slate-100">
+            {filteredRows.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100 hover:bg-slate-50/50">
                 <td className="p-3">{r.storeCode} — {r.storeName}</td>
                 <td className="p-3">{r.state}</td>
                 {active === "Electronics" && <td className="p-3">{r.department ?? "—"}</td>}
                 {active === "Electronics" && <td className="p-3">{r.productFamilyCode ?? "—"}</td>}
                 {active === "Electronics" && <td className="p-3">{r.productFamilyName ?? "—"}</td>}
-                <td className="p-3 text-right">{formatInr(r.targetValue)}</td>
-                <td className="p-3 text-xs">{r.periodStart} to {r.periodEnd}</td>
+                <td className="p-3">{formatInr(r.targetValue)}</td>
+                <td className="p-3 text-xs whitespace-nowrap">{formatDate(r.periodStart)} to {formatDate(r.periodEnd)}</td>
                 <td className="p-3"><StatusBadge status={r.status} /></td>
               </tr>
             ))}
             {loading && <tr><td className="p-3 text-slate-500" colSpan={8}>Loading targets...</td></tr>}
-            {!loading && rows.length === 0 && <tr><td className="p-3 text-slate-500" colSpan={8}>No targets found for this vertical.</td></tr>}
+            {!loading && filteredRows.length === 0 && <tr><td className="p-3 text-slate-500" colSpan={8}>No targets found.</td></tr>}
           </tbody>
         </table>
       </div>

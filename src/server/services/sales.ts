@@ -161,6 +161,7 @@ export async function listSales(filters: SalesFilters) {
             { employeeId: { contains: filters.search, mode: "insensitive" as const } },
             { articleCode: { contains: filters.search, mode: "insensitive" as const } },
             { storeCode: { contains: filters.search, mode: "insensitive" as const } },
+            { employee: { employeeName: { contains: filters.search, mode: "insensitive" as const } } },
           ],
         }
       : {}),
