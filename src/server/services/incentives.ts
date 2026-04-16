@@ -287,10 +287,14 @@ async function getStoreDetail(params: Params) {
     totalStoreTarget > 0 ? Math.round((totalStoreSales / totalStoreTarget) * 1000) / 10 : 0;
 
   // Extract totalPiecesSold from grocery ledger calculationDetails
+  // totalPieces is store-wide — take max across all ledger rows in case some are 0
   let totalPiecesSold = 0;
   if (store.vertical === "GROCERY" && ledger.length > 0) {
-    const details = ledger[0].calculationDetails as Record<string, unknown> | null;
-    totalPiecesSold = Number(details?.totalPieces) || 0;
+    for (const r of ledger) {
+      const details = r.calculationDetails as Record<string, unknown> | null;
+      const pieces = Number(details?.totalPieces) || Number(details?.piecesSold) || Number(details?.pieces) || 0;
+      if (pieces > totalPiecesSold) totalPiecesSold = pieces;
+    }
   }
 
   // FNL week breakdown — aggregate ledger rows by periodStart/periodEnd
@@ -358,6 +362,16 @@ async function getStoreDetail(params: Params) {
       totalEmployees: store.employees.length,
       /** Grocery: total campaign-eligible pieces sold */
       totalPiecesSold,
+      /** Grocery: current per-piece rate based on achievement slab */
+      appliedRate: (() => {
+        if (store.vertical !== "GROCERY" || ledger.length === 0) return 0;
+        for (const r of ledger) {
+          const d = r.calculationDetails as Record<string, unknown> | null;
+          const rate = Number(d?.rate) || Number(d?.appliedRate) || Number(d?.perPieceRate) || 0;
+          if (rate > 0) return rate;
+        }
+        return 0;
+      })(),
     },
     departments,
     employees,
