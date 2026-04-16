@@ -124,7 +124,6 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
   const incByStore = new Map(storeLedgerAgg.map((l) => [l.storeCode, asNumber(l._sum.finalIncentive)]));
 
   // Achievement per store for distribution chart
-  const storeNameMap = new Map(storeRows.map((s) => [s.storeCode, { storeName: s.storeName, vertical: s.vertical, storeFormat: s.storeFormat }]));
   const storeAchievements: { storeCode: string; storeName: string; vertical: string; storeFormat: string; achievementPct: number; incentive: number; sales: number; target: number }[] = [];
   for (const store of storeRows) {
     const target = targetByStore.get(store.storeCode) ?? 0;
