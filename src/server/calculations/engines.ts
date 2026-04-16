@@ -376,11 +376,18 @@ async function calculateFnL(input: RecalculateInput) {
     const allEmployees = await db.employeeMaster.findMany({
       where: { storeCode: target.storeCode },
     });
-    const activeEmployees = allEmployees.filter((e) =>
-      e.payrollStatus === PayrollStatus.ACTIVE ||
-      e.payrollStatus === PayrollStatus.NOTICE_PERIOD ||
-      e.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION
-    );
+    // Employees who are LONG_LEAVE_UNAUTHORISED or INACTIVE are excluded entirely.
+    // Employees who haven't joined yet or have already exited before this week are also excluded.
+    const activeEmployees = allEmployees.filter((e) => {
+      if (
+        e.payrollStatus !== PayrollStatus.ACTIVE &&
+        e.payrollStatus !== PayrollStatus.NOTICE_PERIOD &&
+        e.payrollStatus !== PayrollStatus.DISCIPLINARY_ACTION
+      ) return false;
+      if (e.dateOfJoining > target.periodEnd) return false;
+      if (e.dateOfExit && e.dateOfExit < target.periodStart) return false;
+      return true;
+    });
     const smCount = activeEmployees.filter((employee) => employee.role === EmployeeRole.SM).length;
     const dmCount = activeEmployees.filter((employee) => employee.role === EmployeeRole.DM).length;
     const split = plan.fnlRoleSplits.find((row) => row.numSms === smCount && row.numDms === dmCount);
@@ -408,8 +415,16 @@ async function calculateFnL(input: RecalculateInput) {
     }
     for (const employee of saEmployees) {
       const weekAttendance = attendanceByEmp.get(employee.employeeId) ?? [];
+      // Vendor brief: ANY day of ABSENT, LEAVE_APPROVED, or LEAVE_UNAPPROVED in the week
+      // disqualifies the employee for that entire week — even if they have 5+ PRESENT days.
+      const hasDisqualifyingDay = weekAttendance.some(
+        (day) =>
+          day.status === AttendanceStatus.ABSENT ||
+          day.status === AttendanceStatus.LEAVE_APPROVED ||
+          day.status === AttendanceStatus.LEAVE_UNAPPROVED
+      );
       const presentDays = weekAttendance.filter((day) => day.status === AttendanceStatus.PRESENT).length;
-      if (presentDays >= 5) {
+      if (presentDays >= 5 && !hasDisqualifyingDay) {
         eligibleSAs.push(employee.employeeId);
       }
     }
