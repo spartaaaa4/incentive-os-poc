@@ -183,9 +183,9 @@ const electronicsFamilies: ElecFamily[] = [
 // ─── Grocery: controlled per-store achievement ──────────────────────────────
 
 const groceryDesiredAchievement: Record<string, number> = {
-  "2536": 1.35,  // SIG-Pottammel → 135% → ₹4/piece slab
-  "TGL5": 1.22,  // SMT-Edappal   → 122% → ₹3/piece slab
-  "T28V": 1.02,  // SMT-Kalpetta  → 102% → ₹2/piece slab (barely qualifying)
+  "2536": 1.09,  // SIG-Pottammel → 109% → ₹2/piece slab
+  "TGL5": 1.26,  // SMT-Edappal   → 126% → ₹3/piece slab
+  "T28V": 0.92,  // SMT-Kalpetta  →  92% → below 100% → ₹0 (no incentive)
 };
 
 // ─── F&L: weekly targets and desired sales (Sun-Sat weeks in April 2026) ────

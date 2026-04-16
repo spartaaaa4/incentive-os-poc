@@ -551,13 +551,13 @@ async function buildGroceryDetail(employee: any, ledgerRows: any[], params: Para
     period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
     currentStanding: {
       campaignName: campaign?.campaignName ?? "Campaign",
-      storeTarget: Math.round(targetValue), storeActual: targetValue > 0 ? Math.round(targetValue * achievementPct / 100) : 0,
+      campaignTarget: Math.round(targetValue), campaignActual: targetValue > 0 ? Math.round(targetValue * achievementPct / 100) : 0,
       achievementPct: Math.round(achievementPct * 10) / 10, totalPiecesSold: totalPieces, currentRate: rate,
       totalStorePayout: Math.round(totalStorePayout), employeeCount, yourPayout: Math.round(yourPayout),
     },
     payoutSlabs,
     recentSales,
-    message: `Store is at ${Math.round(achievementPct * 10) / 10}% of target. Current rate: ₹${rate}/piece (${fmtInr(Math.round(yourPayout))} your share).${nudge ? " " + nudge : ""}${salesNeeded > 0 ? ` Store needs ${fmtInr(salesNeeded)} more in sales.` : ""}`,
+    message: `Campaign at ${Math.round(achievementPct * 10) / 10}% of target. Current rate: ₹${rate}/piece (${fmtInr(Math.round(yourPayout))} your share).${nudge ? " " + nudge : ""}${salesNeeded > 0 ? ` Need ${fmtInr(salesNeeded)} more in eligible product sales.` : ""}`,
   };
 }
 
