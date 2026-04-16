@@ -124,15 +124,16 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
   const incByStore = new Map(storeLedgerAgg.map((l) => [l.storeCode, asNumber(l._sum.finalIncentive)]));
 
   // Achievement per store for distribution chart
-  const storeAchievements: { storeCode: string; achievementPct: number; incentive: number; sales: number }[] = [];
+  const storeNameMap = new Map(storeRows.map((s) => [s.storeCode, { storeName: s.storeName, vertical: s.vertical, storeFormat: s.storeFormat }]));
+  const storeAchievements: { storeCode: string; storeName: string; vertical: string; storeFormat: string; achievementPct: number; incentive: number; sales: number; target: number }[] = [];
   for (const store of storeRows) {
     const target = targetByStore.get(store.storeCode) ?? 0;
     const sales = salesByStore.get(store.storeCode) ?? 0;
     const achievementPct = target > 0 ? Math.round((sales / target) * 100) : 0;
-    storeAchievements.push({ storeCode: store.storeCode, achievementPct, incentive: incByStore.get(store.storeCode) ?? 0, sales });
+    storeAchievements.push({ storeCode: store.storeCode, storeName: store.storeName, vertical: store.vertical, storeFormat: store.storeFormat ?? "", achievementPct, incentive: incByStore.get(store.storeCode) ?? 0, sales, target });
   }
 
-  // Achievement distribution buckets
+  // Achievement distribution buckets — include store details for drill-down
   const buckets = [
     { label: "0-70%", min: 0, max: 70 },
     { label: "70-85%", min: 70, max: 85 },
@@ -141,10 +142,16 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     { label: "105-120%", min: 105, max: 120 },
     { label: "120%+", min: 120, max: 9999 },
   ];
-  const achievementDistribution = buckets.map((b) => ({
-    bucket: b.label,
-    count: storeAchievements.filter((s) => s.achievementPct >= b.min && s.achievementPct < b.max).length,
-  }));
+  const achievementDistribution = buckets.map((b) => {
+    const stores = storeAchievements
+      .filter((s) => s.achievementPct >= b.min && s.achievementPct < b.max)
+      .sort((a, c) => c.achievementPct - a.achievementPct);
+    return {
+      bucket: b.label,
+      count: stores.length,
+      stores: stores.map((s) => ({ storeCode: s.storeCode, storeName: s.storeName, vertical: s.vertical, sales: s.sales, target: s.target, achievementPct: s.achievementPct })),
+    };
+  });
 
   // Total target across all stores (needed for daily pace line)
   const totalTarget = [...targetByStore.values()].reduce((a, b) => a + b, 0);

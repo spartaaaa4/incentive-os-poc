@@ -134,9 +134,17 @@ export const IncentiveDrilldown = forwardRef<
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      <Flex align="center" gap={8} wrap="wrap">
+      <Flex align="center" gap={12} wrap="wrap" style={{ marginBottom: crumbs.length > 1 ? 4 : 0 }}>
         {crumbs.length > 1 ? (
-          <Button type="text" size="small" icon={<ArrowLeft size={14} />} onClick={goBack} aria-label="Back" />
+          <Button
+            type="default"
+            size="middle"
+            icon={<ArrowLeft size={16} />}
+            onClick={goBack}
+            style={{ fontWeight: 600, borderColor: "#d1d5db", borderRadius: 8, paddingInline: 16 }}
+          >
+            Back
+          </Button>
         ) : null}
         <Breadcrumb items={breadcrumbItems} separator={<ChevronRight size={12} />} />
       </Flex>
