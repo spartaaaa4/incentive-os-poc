@@ -11,6 +11,7 @@ type SalesRow = {
   storeCode: string;
   storeName: string;
   vertical: string;
+  employeeId: string | null;
   employeeName: string;
   department: string;
   articleCode: string;
@@ -27,19 +28,23 @@ type SalesRow = {
 };
 
 type StoreOption = { storeCode: string; storeName: string; vertical: string };
-type EmployeeOption = { employeeId: string; employeeName: string; storeCode: string };
 
 type Filters = {
   vertical: string;
   storeCode: string;
   transactionType: string;
-  employeeId: string;
   dateFrom: string;
   dateTo: string;
   search: string;
 };
 
-const emptyFilters: Filters = { vertical: "", storeCode: "", transactionType: "", employeeId: "", dateFrom: "", dateTo: "", search: "" };
+const emptyFilters: Filters = { vertical: "", storeCode: "", transactionType: "", dateFrom: "", dateTo: "", search: "" };
+
+function formatDate(iso: string): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}-${m}-${y}`;
+}
 
 const columnSpec = [
   { key: "transactionId", label: "Transaction ID", type: "String", required: true, description: "Unique identifier for the sales transaction" },
@@ -98,7 +103,6 @@ export function SalesView() {
   const [appliedFilters, setAppliedFilters] = useState<Filters>(emptyFilters);
 
   const [stores, setStores] = useState<StoreOption[]>([]);
-  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
 
   const [showUpload, setShowUpload] = useState(false);
   const [csvRows, setCsvRows] = useState<Record<string, string>[]>([]);
@@ -134,7 +138,6 @@ export function SalesView() {
       .then((r) => (r.ok ? r.json() : { stores: [], employees: [] }))
       .then((d) => {
         setStores(d.stores ?? []);
-        setEmployees(d.employees ?? []);
       })
       .catch(() => {});
   }, []);
@@ -146,7 +149,6 @@ export function SalesView() {
       if (f.vertical) params.set("vertical", f.vertical);
       if (f.storeCode) params.set("storeCode", f.storeCode);
       if (f.transactionType) params.set("transactionType", f.transactionType);
-      if (f.employeeId) params.set("employeeId", f.employeeId);
       if (f.dateFrom) params.set("dateFrom", f.dateFrom);
       if (f.dateTo) params.set("dateTo", f.dateTo);
       if (f.search) params.set("search", f.search);
@@ -170,11 +172,6 @@ export function SalesView() {
     if (!filters.vertical) return stores;
     return stores.filter((s) => s.vertical === filters.vertical);
   }, [stores, filters.vertical]);
-
-  const filteredEmployees = useMemo(() => {
-    if (!filters.storeCode) return employees;
-    return employees.filter((e) => e.storeCode === filters.storeCode);
-  }, [employees, filters.storeCode]);
 
   const handleApply = () => { setPage(1); setAppliedFilters({ ...filters }); };
   const handleReset = () => {
@@ -267,13 +264,7 @@ export function SalesView() {
   const updateFilter = (key: keyof Filters, value: string) => {
     setFilters((prev) => {
       const next = { ...prev, [key]: value };
-      if (key === "vertical") {
-        next.storeCode = "";
-        next.employeeId = "";
-      }
-      if (key === "storeCode") {
-        next.employeeId = "";
-      }
+      if (key === "vertical") next.storeCode = "";
       return next;
     });
   };
@@ -315,16 +306,6 @@ export function SalesView() {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Employee</label>
-            <select value={filters.employeeId} onChange={(e) => updateFilter("employeeId", e.target.value)} className={selectClass}>
-              <option value="">All Employees</option>
-              {filteredEmployees.map((e) => (
-                <option key={e.employeeId} value={e.employeeId}>{e.employeeId} — {e.employeeName}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex flex-col gap-1">
             <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Date From</label>
             <input type="date" value={filters.dateFrom} onChange={(e) => updateFilter("dateFrom", e.target.value)} className={inputClass} />
           </div>
@@ -338,7 +319,7 @@ export function SalesView() {
             <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Search</label>
             <input
               type="text"
-              placeholder="Txn ID / Employee / Article"
+              placeholder="Txn ID / Employee ID / Employee Name / Article"
               value={filters.search}
               onChange={(e) => updateFilter("search", e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
@@ -374,7 +355,6 @@ export function SalesView() {
             {appliedFilters.vertical && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.vertical}</span>}
             {appliedFilters.storeCode && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.storeCode}</span>}
             {appliedFilters.transactionType && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.transactionType}</span>}
-            {appliedFilters.employeeId && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">{appliedFilters.employeeId}</span>}
             {appliedFilters.dateFrom && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">From {appliedFilters.dateFrom}</span>}
             {appliedFilters.dateTo && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">To {appliedFilters.dateTo}</span>}
             {appliedFilters.search && <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-0.5">&quot;{appliedFilters.search}&quot;</span>}
@@ -392,17 +372,18 @@ export function SalesView() {
               <th className="p-3 text-left">Date</th>
               <th className="p-3 text-left">Store</th>
               <th className="p-3 text-left">Vertical</th>
+              <th className="p-3 text-left">Employee ID</th>
               <th className="p-3 text-left">Employee</th>
               <th className="p-3 text-left">Department</th>
               <th className="p-3 text-left">Article</th>
               <th className="p-3 text-left">Brand</th>
-              <th className="p-3 text-right">Qty</th>
-              <th className="p-3 text-right">Gross</th>
-              <th className="p-3 text-right">Tax</th>
-              <th className="p-3 text-right">Total</th>
+              <th className="p-3 text-left">Qty</th>
+              <th className="p-3 text-left">Gross</th>
+              <th className="p-3 text-left">Tax</th>
+              <th className="p-3 text-left">Total</th>
               <th className="p-3 text-left">Type</th>
               <th className="p-3 text-left">Channel</th>
-              <th className="p-3 text-right">Incentive</th>
+              <th className="p-3 text-left">Incentive</th>
               <th className="p-3 text-left">Status</th>
             </tr>
           </thead>
@@ -410,20 +391,21 @@ export function SalesView() {
             {rows.map((row) => (
               <tr key={row.transactionId} className="border-t border-slate-100 hover:bg-slate-50/50">
                 <td className="p-3 font-mono text-xs">{row.transactionId}</td>
-                <td className="p-3 whitespace-nowrap">{row.transactionDate}</td>
+                <td className="p-3 whitespace-nowrap">{formatDate(row.transactionDate)}</td>
                 <td className="p-3 whitespace-nowrap">{row.storeCode} — {row.storeName}</td>
                 <td className="p-3">{row.vertical}</td>
+                <td className="p-3 font-mono text-xs">{row.employeeId ?? "—"}</td>
                 <td className="p-3 whitespace-nowrap">{row.employeeName}</td>
                 <td className="p-3">{row.department}</td>
                 <td className="p-3 font-mono text-xs">{row.articleCode}</td>
                 <td className="p-3">{row.brand}</td>
-                <td className="p-3 text-right">{row.quantity}</td>
-                <td className="p-3 text-right whitespace-nowrap">{formatInr(row.grossAmount)}</td>
-                <td className="p-3 text-right whitespace-nowrap">{formatInr(row.taxAmount)}</td>
-                <td className="p-3 text-right whitespace-nowrap">{formatInr(row.totalAmount)}</td>
+                <td className="p-3">{row.quantity}</td>
+                <td className="p-3 whitespace-nowrap">{formatInr(row.grossAmount)}</td>
+                <td className="p-3 whitespace-nowrap">{formatInr(row.taxAmount)}</td>
+                <td className="p-3 whitespace-nowrap">{formatInr(row.totalAmount)}</td>
                 <td className="p-3">{row.transactionType}</td>
                 <td className="p-3">{row.channel}</td>
-                <td className="p-3 text-right whitespace-nowrap font-medium">
+                <td className="p-3 whitespace-nowrap font-medium">
                   {row.incentiveAmount > 0 ? (
                     <span className="text-emerald-700">{row.calculatedIncentive}</span>
                   ) : (
@@ -438,10 +420,10 @@ export function SalesView() {
               </tr>
             ))}
             {loading && (
-              <tr><td className="p-3 text-slate-500" colSpan={16}>Loading sales...</td></tr>
+              <tr><td className="p-3 text-slate-500" colSpan={17}>Loading sales...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td className="p-3 text-slate-500" colSpan={16}>No sales transactions found.</td></tr>
+              <tr><td className="p-3 text-slate-500" colSpan={17}>No sales transactions found.</td></tr>
             )}
           </tbody>
         </table>
