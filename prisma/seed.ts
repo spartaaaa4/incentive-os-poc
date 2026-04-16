@@ -269,8 +269,8 @@ const fnlEmployeeDefs: FnlEmpDef[] = [
   { employeeId: "E175", employeeName: "Dev Bengaluru",    role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
   { employeeId: "E176", employeeName: "Sneha Bengaluru",  role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
   { employeeId: "E177", employeeName: "Karan Bengaluru",  role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
-  // E178: W1 = 5P+1ABSENT+1WO → ABSENT disqualifies entire week (ineligible W1)
-  //        W2 = 5P+1HOLIDAY+1WO → exactly 5 PRESENT, no disqualifying day → ELIGIBLE (minimum threshold)
+  // E178: W1 = 5P+1ABSENT+1WO → 5 PRESENT days → ELIGIBLE (meets >=5 threshold)
+  //        W2 = 5P+1HOLIDAY+1WO → 5 PRESENT days → ELIGIBLE
   { employeeId: "E178", employeeName: "Ishita Bengaluru", role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "THRESHOLD_TEST" },
   { employeeId: "E179", employeeName: "Rohan Bengaluru",  role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
   { employeeId: "E180", employeeName: "Diya Bengaluru",   role: EmployeeRole.SA, storeCode: "FL01", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
@@ -296,7 +296,7 @@ const fnlEmployeeDefs: FnlEmpDef[] = [
 
   // ── FL03: Trends Andheri (1SM + 3DM + 10SA + 1DA-SA + 1LLU-SA = 16) ────────
   // 3 DMs → split [1,3] = 60%/12%/9.2% per DM.
-  // E202: approved-leave trap — 5P+1LA+1WO in W3 → LEAVE_APPROVED disqualifies.
+  // E202: 5P+1LA+1WO in W3 → 5 PRESENT days → ELIGIBLE (leave doesn't disqualify if >=5 present).
   // E203: exits mid-W3 (Apr 21) — only 2 PRESENT days in W3 → ineligible W3; excluded W4.
   // E204: DISCIPLINARY_ACTION — counted in activeEmployees for split math but NOT disbursable.
   // E205: LONG_LEAVE_UNAUTHORISED — completely excluded from activeEmployees (not even counted).
@@ -312,7 +312,7 @@ const fnlEmployeeDefs: FnlEmpDef[] = [
   { employeeId: "E199", employeeName: "Dev Mumbai",     role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
   { employeeId: "E200", employeeName: "Om Mumbai",      role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
   { employeeId: "E201", employeeName: "Arjun Mumbai",   role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "STANDARD" },
-  // E202: W3 = 5P+1WO+1LEAVE_APPROVED → has approved-leave day → ineligible W3
+  // E202: W3 = 5P+1WO+1LEAVE_APPROVED → 5 PRESENT days → eligible W3
   { employeeId: "E202", employeeName: "Ritika Mumbai",  role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: null,                  attendanceScenario: "LEAVE_APPROVED_TRAP" },
   // E203: exits 2026-04-21 (W3). Engine excludes from W4. W3 attendance = 2P → ineligible W3.
   { employeeId: "E203", employeeName: "Neha Mumbai",    role: EmployeeRole.SA, storeCode: "FL03", payrollStatus: PayrollStatus.ACTIVE,                  dateOfJoining: new Date("2023-01-01"), dateOfExit: new Date("2026-04-21"), attendanceScenario: "EXITS_WEEK3" },
@@ -323,8 +323,7 @@ const fnlEmployeeDefs: FnlEmpDef[] = [
 
   // ── FL04: Trends HSR (1SM + 2DM + 6SA = 9) ──────────────────────────────────
   // 2 DMs → split [1,2] = 60%/16%/12%.
-  // E214: perfect W1-W3, LEAVE_UNAPPROVED in W4 → ineligible W4 only (late disqualification).
-  //   Reduces eligible SA count W4: 5 instead of 6 → pool divides fewer → per-SA payout increases.
+  // E214: perfect W1-W3. W4: 5P+1LEAVE_UNAPPROVED+1WO → 5 PRESENT days → still eligible W4.
   { employeeId: "E206", employeeName: "Om Bengaluru",     role: EmployeeRole.SM, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
   { employeeId: "E207", employeeName: "Arjun Bengaluru",  role: EmployeeRole.DM, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
   { employeeId: "E208", employeeName: "Ritika Bengaluru", role: EmployeeRole.DM, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
@@ -333,7 +332,7 @@ const fnlEmployeeDefs: FnlEmpDef[] = [
   { employeeId: "E211", employeeName: "Aditya Bengaluru", role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
   { employeeId: "E212", employeeName: "Saanvi Bengaluru", role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
   { employeeId: "E213", employeeName: "Ananya Bengaluru", role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "STANDARD" },
-  // E214: W1-W3 standard (eligible). W4: 5P+1LEAVE_UNAPPROVED+1WO → LU disqualifies.
+  // E214: W1-W3 standard (eligible). W4: 5P+1LEAVE_UNAPPROVED+1WO → 5P → still eligible.
   { employeeId: "E214", employeeName: "Diya Bengaluru",   role: EmployeeRole.SA, storeCode: "FL04", payrollStatus: PayrollStatus.ACTIVE, dateOfJoining: new Date("2023-01-01"), dateOfExit: null, attendanceScenario: "LATE_DISQUALIFICATION" },
 
   // ── FL05: TST Pune (1SM + 1DM + 4SA = 6) ─────────────────────────────────────

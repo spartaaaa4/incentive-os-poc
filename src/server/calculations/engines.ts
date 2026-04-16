@@ -415,16 +415,11 @@ async function calculateFnL(input: RecalculateInput) {
     }
     for (const employee of saEmployees) {
       const weekAttendance = attendanceByEmp.get(employee.employeeId) ?? [];
-      // Vendor brief: ANY day of ABSENT, LEAVE_APPROVED, or LEAVE_UNAPPROVED in the week
-      // disqualifies the employee for that entire week — even if they have 5+ PRESENT days.
-      const hasDisqualifyingDay = weekAttendance.some(
-        (day) =>
-          day.status === AttendanceStatus.ABSENT ||
-          day.status === AttendanceStatus.LEAVE_APPROVED ||
-          day.status === AttendanceStatus.LEAVE_UNAPPROVED
-      );
+      // Eligibility rule: employee is eligible if they have 5 or more PRESENT days
+      // in the week. Other day statuses (ABSENT, LEAVE, WEEK_OFF) don't matter
+      // as long as the PRESENT count meets the threshold.
       const presentDays = weekAttendance.filter((day) => day.status === AttendanceStatus.PRESENT).length;
-      if (presentDays >= 5 && !hasDisqualifyingDay) {
+      if (presentDays >= 5) {
         eligibleSAs.push(employee.employeeId);
       }
     }
