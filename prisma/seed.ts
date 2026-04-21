@@ -705,6 +705,76 @@ async function main() {
         canUploadData: false,
       },
     },
+    // ── Approver-only personas ───────────────────────────────────────────
+    // Maker-checker split: these accounts can APPROVE but not edit/submit.
+    // Priya/Rahul (above) are makers for their verticals; these are the
+    // corresponding checkers. One cross-vertical approver + three
+    // vertical-scoped approvers.
+    {
+      employeeId: "ApproverAll",
+      employeeName: "Anita Desai",
+      password: "password",
+      role: EmployeeRole.SM,
+      department: null,
+      // Cross-vertical approver (e.g. CHRO / finance controller).
+      access: {
+        verticals: [],
+        canViewAll: true,
+        canEditIncentives: false,
+        canSubmitApproval: false,
+        canApprove: true,
+        canManageUsers: false,
+        canUploadData: false,
+      },
+    },
+    {
+      employeeId: "ApproverElec",
+      employeeName: "Suresh Iyer",
+      password: "password",
+      role: EmployeeRole.SM,
+      department: null,
+      access: {
+        verticals: [Vertical.ELECTRONICS],
+        canViewAll: true,
+        canEditIncentives: false,
+        canSubmitApproval: false,
+        canApprove: true,
+        canManageUsers: false,
+        canUploadData: false,
+      },
+    },
+    {
+      employeeId: "ApproverGroc",
+      employeeName: "Deepa Menon",
+      password: "password",
+      role: EmployeeRole.SM,
+      department: null,
+      access: {
+        verticals: [Vertical.GROCERY],
+        canViewAll: true,
+        canEditIncentives: false,
+        canSubmitApproval: false,
+        canApprove: true,
+        canManageUsers: false,
+        canUploadData: false,
+      },
+    },
+    {
+      employeeId: "ApproverFnl",
+      employeeName: "Arjun Pillai",
+      password: "password",
+      role: EmployeeRole.SM,
+      department: null,
+      access: {
+        verticals: [Vertical.FNL],
+        canViewAll: true,
+        canEditIncentives: false,
+        canSubmitApproval: false,
+        canApprove: true,
+        canManageUsers: false,
+        canUploadData: false,
+      },
+    },
   ];
 
   for (const admin of adminSeedUsers) {
