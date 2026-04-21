@@ -1,7 +1,8 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { requirePermission } from "@/lib/permissions";
 
 const newVersionSchema = z.object({
   planId: z.number().int().positive(),
@@ -13,7 +14,7 @@ function asNumber(value: unknown): number {
   return Number(value ?? 0);
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
     const body = newVersionSchema.safeParse(await request.json());
     if (!body.success) {
@@ -36,6 +37,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Can only create new version from ACTIVE plan" }, { status: 400 });
     }
 
+    const auth = await requirePermission(request, "canEditIncentives", { vertical: source.vertical });
+    if ("error" in auth) return auth.error;
+    const createdBy = auth.identity.employeeId;
+
     const result = await db.$transaction(async (tx) => {
       const newPlan = await tx.incentivePlan.create({
         data: {
@@ -46,7 +51,7 @@ export async function POST(request: Request) {
           status: "DRAFT",
           version: source.version + 1,
           config: source.config ?? undefined,
-          createdBy: "admin",
+          createdBy,
         },
       });
 
@@ -140,7 +145,7 @@ export async function POST(request: Request) {
           entityId: newPlan.id,
           action: "CREATED",
           newValue: { clonedFrom: source.id, version: newPlan.version },
-          performedBy: "admin",
+          performedBy: createdBy,
         },
       });
 

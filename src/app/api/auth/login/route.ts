@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
-import { signToken } from "@/lib/auth";
+import { signToken, attachSessionCookie } from "@/lib/auth";
 
 const loginSchema = z.object({
   employerId: z.string().trim().min(1, "Employer ID is required"),
@@ -20,7 +20,14 @@ export async function POST(request: Request) {
     const { employerId, password } = parsed.data;
     const credential = await db.userCredential.findUnique({
       where: { employerId },
-      include: { employee: { include: { store: true } } },
+      include: {
+        employee: {
+          include: {
+            store: true,
+            adminAccess: true,
+          },
+        },
+      },
     });
 
     if (!credential || !credential.isActive) {
@@ -37,30 +44,52 @@ export async function POST(request: Request) {
       data: { lastLoginAt: new Date() },
     });
 
+    const emp = credential.employee;
+    const hasAdminAccess = Boolean(emp.hasAdminAccess && emp.adminAccess);
+
     const token = signToken({
       employerId: credential.employerId,
-      employeeId: credential.employee.employeeId,
-      role: credential.employee.role,
-      storeCode: credential.employee.storeCode,
+      employeeId: emp.employeeId,
+      role: emp.role,
+      storeCode: emp.storeCode,
+      hasAdminAccess,
     });
 
-    return NextResponse.json({
+    const adminAccess = hasAdminAccess && emp.adminAccess
+      ? {
+          verticals: emp.adminAccess.verticals,
+          canViewAll: emp.adminAccess.canViewAll,
+          canEditIncentives: emp.adminAccess.canEditIncentives,
+          canSubmitApproval: emp.adminAccess.canSubmitApproval,
+          canApprove: emp.adminAccess.canApprove,
+          canManageUsers: emp.adminAccess.canManageUsers,
+          canUploadData: emp.adminAccess.canUploadData,
+        }
+      : null;
+
+    const response = NextResponse.json({
       ok: true,
       token,
       user: {
         employerId: credential.employerId,
-        employeeId: credential.employee.employeeId,
-        employeeName: credential.employee.employeeName,
-        role: credential.employee.role,
-        storeCode: credential.employee.storeCode,
-        storeName: credential.employee.store.storeName,
-        vertical: credential.employee.store.vertical,
-        storeFormat: credential.employee.store.storeFormat,
-        city: credential.employee.store.city,
-        state: credential.employee.store.state,
-        storeStatus: credential.employee.store.storeStatus,
+        employeeId: emp.employeeId,
+        employeeName: emp.employeeName,
+        role: emp.role,
+        storeCode: emp.storeCode,
+        storeName: emp.store.storeName,
+        vertical: emp.store.vertical,
+        storeFormat: emp.store.storeFormat,
+        city: emp.store.city,
+        state: emp.store.state,
+        storeStatus: emp.store.storeStatus,
+        hasAdminAccess,
+        adminAccess,
       },
     });
+
+    // Cookie session for admin web app. Mobile clients ignore it and keep
+    // using the Bearer token from the response body.
+    return attachSessionCookie(response, token);
   } catch (error) {
     console.error("Login API error:", error);
     return NextResponse.json({ error: "Login failed" }, { status: 500 });

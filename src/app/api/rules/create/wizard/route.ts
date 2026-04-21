@@ -1,7 +1,8 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { requirePermission } from "@/lib/permissions";
 
 const slabSchema = z.object({
   productFamily: z.string(),
@@ -41,13 +42,17 @@ const wizardSchema = z.object({
   distributionRule: z.enum(["EQUAL"]).optional(),
 });
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
     const parsed = wizardSchema.safeParse(await request.json());
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
     }
     const d = parsed.data;
+
+    const auth = await requirePermission(request, "canEditIncentives", { vertical: d.vertical });
+    if ("error" in auth) return auth.error;
+    const createdBy = auth.identity.employeeId;
 
     const formulaType = d.vertical === "ELECTRONICS" ? "PER_UNIT" : d.vertical === "GROCERY" ? "CAMPAIGN_SLAB" : "WEEKLY_POOL";
     const periodType = d.vertical === "ELECTRONICS" ? "MONTHLY" : d.vertical === "GROCERY" ? "CAMPAIGN" : "WEEKLY";
@@ -68,7 +73,7 @@ export async function POST(request: Request) {
           effectiveFrom: new Date(d.effectiveFrom),
           effectiveTo: new Date(d.effectiveTo),
           config: config ?? undefined,
-          createdBy: "admin",
+          createdBy,
         },
       });
 

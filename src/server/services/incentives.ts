@@ -1,5 +1,6 @@
 import { Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
+import { currentLedgerWhere } from "../calculations/currentLedger";
 import { payoutDateFor, workingDaysInPeriod, runRateFor } from "./periodHelpers";
 
 function asNumber(value: unknown): number {
@@ -50,6 +51,7 @@ async function getCitySummary(params: Params) {
         periodStart: { gte: params.periodStart },
         periodEnd: { lte: params.periodEnd },
         ...verticalFilter,
+        ...currentLedgerWhere(),
       },
       select: { storeCode: true, employeeId: true, finalIncentive: true, achievementPct: true },
     }),
@@ -124,7 +126,7 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
 
   const [ledger, targets, sales] = await Promise.all([
     db.incentiveLedger.findMany({
-      where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter },
+      where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter, ...currentLedgerWhere() },
       select: { storeCode: true, finalIncentive: true },
     }),
     db.target.findMany({
@@ -170,7 +172,7 @@ async function getStoreSummary(params: Params) {
   const storeCodes = stores.map((s) => s.storeCode);
 
   const ledger = await db.incentiveLedger.findMany({
-    where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter },
+    where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter, ...currentLedgerWhere() },
     select: { storeCode: true, finalIncentive: true, achievementPct: true },
   });
 
@@ -219,7 +221,7 @@ async function getStoreDetail(params: Params) {
 
   const [ledger, targets, salesAgg] = await Promise.all([
     db.incentiveLedger.findMany({
-      where: { storeCode: params.storeCode!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd } },
+      where: { storeCode: params.storeCode!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...currentLedgerWhere() },
       include: { employee: true },
     }),
     db.target.findMany({
@@ -390,7 +392,7 @@ async function getEmployeeDetail(params: Params) {
   if (!employee) return { level: "employeeDetail" as const, error: "Employee not found" };
 
   const ledgerRows = await db.incentiveLedger.findMany({
-    where: { employeeId: params.employeeId!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd } },
+    where: { employeeId: params.employeeId!, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...currentLedgerWhere() },
     include: { plan: { include: { achievementMultipliers: true, fnlRoleSplits: true, productIncentiveSlabs: true } } },
     orderBy: { periodStart: "desc" },
   });
@@ -657,7 +659,7 @@ async function buildGroceryDetail(employee: any, ledgerRows: any[], params: Para
     });
     if (prevCampaign) {
       const prevLedger = await db.incentiveLedger.findFirst({
-        where: { campaignId: prevCampaign.id, employeeId: employee.employeeId },
+        where: { campaignId: prevCampaign.id, employeeId: employee.employeeId, ...currentLedgerWhere() },
         select: { finalIncentive: true },
       });
       if (prevLedger) lastCampaignPayoutPerEmp = Math.round(asNumber(prevLedger.finalIncentive));

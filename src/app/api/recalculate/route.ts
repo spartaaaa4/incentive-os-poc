@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { startOfMonth, endOfMonth } from "date-fns";
 import { db } from "@/lib/db";
 import { recalculateIncentives } from "@/server/calculations/engines";
+import { requirePermission } from "@/lib/permissions";
 
 async function runRecalculate(storeCode: string | null, month: string | null) {
   const anchor = month ? new Date(month + "-15") : new Date("2026-04-13");
@@ -21,7 +22,7 @@ async function runRecalculate(storeCode: string | null, month: string | null) {
     return { error: "No stores found", status: 400 as const };
   }
 
-  await recalculateIncentives({ storeCodes, periodStart, periodEnd });
+  await recalculateIncentives({ storeCodes, periodStart, periodEnd, trigger: "MANUAL_RECOMPUTE" });
 
   const ledgerCount = await db.incentiveLedger.count({
     where: {
@@ -41,6 +42,9 @@ async function runRecalculate(storeCode: string | null, month: string | null) {
 
 export async function GET(request: NextRequest) {
   try {
+    const auth = await requirePermission(request, "canEditIncentives");
+    if ("error" in auth) return auth.error;
+
     const { searchParams } = new URL(request.url);
     const storeCode = searchParams.get("storeCode");
     const month = searchParams.get("month");
@@ -57,6 +61,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const auth = await requirePermission(request, "canEditIncentives");
+    if ("error" in auth) return auth.error;
+
     const body = await request.json();
     const month = body.month as string | undefined;
     const storeCode = body.storeCode as string | undefined;

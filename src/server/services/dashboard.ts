@@ -1,6 +1,7 @@
 import { startOfMonth, endOfMonth, format, addDays, differenceInDays } from "date-fns";
 import { Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
+import { currentLedgerWhere } from "../calculations/currentLedger";
 
 function asNumber(value: unknown): number {
   if (typeof value === "number") return value;
@@ -45,7 +46,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
       where: { status: "ACTIVE", ...verticalWhere },
     }),
     db.incentiveLedger.aggregate({
-      where: { periodStart: { gte: monthStart }, ...verticalWhere },
+      where: { periodStart: { gte: monthStart }, ...verticalWhere, ...currentLedgerWhere() },
       _sum: { finalIncentive: true, baseIncentive: true },
     }),
     db.salesTransaction.aggregate({
@@ -54,7 +55,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     }),
     db.incentiveLedger.groupBy({
       by: ["employeeId", "storeCode"] as const,
-      where: { periodStart: { gte: monthStart }, ...verticalWhere },
+      where: { periodStart: { gte: monthStart }, ...verticalWhere, ...currentLedgerWhere() },
       _sum: { finalIncentive: true },
       orderBy: { _sum: { finalIncentive: "desc" } },
       take: 10,
@@ -82,7 +83,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     }),
     db.incentiveLedger.groupBy({
       by: ["storeCode"] as const,
-      where: { periodStart: { gte: monthStart }, ...verticalWhere },
+      where: { periodStart: { gte: monthStart }, ...verticalWhere, ...currentLedgerWhere() },
       _sum: { finalIncentive: true, baseIncentive: true },
     }),
     db.salesTransaction.groupBy({
@@ -109,7 +110,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
     }),
     db.incentiveLedger.groupBy({
       by: ["vertical"] as const,
-      where: { periodStart: { gte: monthStart } },
+      where: { periodStart: { gte: monthStart }, ...currentLedgerWhere() },
       _sum: { finalIncentive: true, baseIncentive: true },
     }),
   ]);
@@ -186,7 +187,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
 
   // Last calculated timestamp (most recent ledger entry)
   const lastLedgerRow = await db.incentiveLedger.findFirst({
-    where: { periodStart: { gte: monthStart }, ...verticalWhere },
+    where: { periodStart: { gte: monthStart }, ...verticalWhere, ...currentLedgerWhere() },
     orderBy: { calculatedAt: "desc" },
     select: { calculatedAt: true },
   });
@@ -257,7 +258,7 @@ export async function getDashboardData(vertical?: Vertical, month?: string) {
   const earningEmployees = new Set(
     storeLedgerAgg.length > 0
       ? (await db.incentiveLedger.findMany({
-          where: { periodStart: { gte: monthStart }, ...verticalWhere, finalIncentive: { gt: 0 } },
+          where: { periodStart: { gte: monthStart }, ...verticalWhere, finalIncentive: { gt: 0 }, ...currentLedgerWhere() },
           select: { employeeId: true },
           distinct: ["employeeId"],
         })).map((r) => r.employeeId)

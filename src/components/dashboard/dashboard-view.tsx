@@ -224,6 +224,20 @@ export function DashboardView() {
 
   const drilldownRef = useRef<{ drillToStore: (storeCode: string, storeName: string) => void } | null>(null);
 
+  const [attendance, setAttendance] = useState<{ isConnected: boolean; latestUploadAt: string | null } | null>(null);
+  useEffect(() => {
+    fetch("/api/attendance/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((payload) => {
+        if (!payload) return;
+        setAttendance({
+          isConnected: !!payload.isConnected,
+          latestUploadAt: payload.latestUpload?.uploadedAt ?? null,
+        });
+      })
+      .catch(() => {});
+  }, []);
+
   const handleEnterCityStores = useCallback(() => {
     setOverviewCollapsed(true);
   }, []);
@@ -381,6 +395,24 @@ export function DashboardView() {
               )}
             </Flex>
           </Flex>
+
+          {(selected === "ALL" || selected === Vertical.FNL) && attendance && !attendance.isConnected ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="Attendance data not connected"
+              description={
+                attendance.latestUploadAt
+                  ? `F&L weekly pool incentives depend on attendance. Last upload was on ${new Date(attendance.latestUploadAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}. Upload current-period attendance to resume F&L calculation.`
+                  : "F&L weekly pool incentives cannot be calculated until attendance is uploaded."
+              }
+              action={
+                <Link href="/attendance">
+                  <Button size="small" type="primary">Upload attendance</Button>
+                </Link>
+              }
+            />
+          ) : null}
 
           {data && (
             <>

@@ -1,7 +1,8 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { requirePermission } from "@/lib/permissions";
 
 const groceryUpdateSchema = z.object({
   planId: z.number().int().positive(),
@@ -26,13 +27,16 @@ const groceryUpdateSchema = z.object({
   })).optional(),
 });
 
-export async function PUT(request: Request) {
+export async function PUT(request: NextRequest) {
   try {
     const parsed = groceryUpdateSchema.safeParse(await request.json());
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
     }
     const { planId, campaignId, campaignName, startDate, endDate, channel, articles, storeTargets, payoutSlabs } = parsed.data;
+
+    const auth = await requirePermission(request, "canEditIncentives", { vertical: "GROCERY" });
+    if ("error" in auth) return auth.error;
 
     await db.$transaction(async (tx) => {
       await tx.incentivePlan.update({

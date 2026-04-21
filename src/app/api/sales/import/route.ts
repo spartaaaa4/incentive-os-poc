@@ -1,9 +1,10 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { Channel, TransactionType, Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
 import { recalculateByDateSpan } from "@/server/calculations/engines";
+import { requirePermission } from "@/lib/permissions";
 
 const salesRowSchema = z.object({
   transactionId: z.string().min(1),
@@ -35,7 +36,10 @@ function parseDate(input: string): Date {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const auth = await requirePermission(request, "canUploadData");
+  if ("error" in auth) return auth.error;
+
   const body = await request.json();
   const rows: unknown[] = Array.isArray(body.rows) ? body.rows : [];
   const errors: string[] = [];
@@ -119,7 +123,9 @@ export async function POST(request: Request) {
 
   const sortedDates = parsedRows.map((r) => r.transactionDate).sort((a, b) => a.getTime() - b.getTime());
   if (sortedDates.length) {
-    await recalculateByDateSpan(uniqueStores, sortedDates[0], sortedDates[sortedDates.length - 1]);
+    await recalculateByDateSpan(uniqueStores, sortedDates[0], sortedDates[sortedDates.length - 1], {
+      trigger: "INGESTION",
+    });
   }
 
   return NextResponse.json({ imported: actuallyInserted, skipped, errors: [] });

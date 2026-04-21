@@ -7,6 +7,9 @@ export interface JwtPayload {
   employeeId: string;
   role: string;
   storeCode: string;
+  /** Denormalized admin flag. Fast-path for middleware; the authoritative
+   *  source is `EmployeeMaster.hasAdminAccess` + `EmployeeAdminAccess`. */
+  hasAdminAccess?: boolean;
 }
 
 function getJwtSecret(): string {
@@ -20,6 +23,9 @@ function getJwtSecret(): string {
 const JWT_SECRET = getJwtSecret();
 const TOKEN_EXPIRY = "7d";
 
+/** Cookie name for admin web sessions. Mobile clients still use Bearer. */
+export const SESSION_COOKIE_NAME = "ios_session";
+
 export function signToken(payload: JwtPayload): string {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
 }
@@ -28,11 +34,18 @@ export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, JWT_SECRET) as JwtPayload;
 }
 
+/**
+ * Token extraction order:
+ *   1. Authorization: Bearer <token>   (mobile app, API clients)
+ *   2. Cookie ios_session=<token>      (admin web app)
+ */
 function extractToken(request: NextRequest): string | null {
   const header = request.headers.get("authorization");
   if (header?.startsWith("Bearer ")) {
     return header.slice(7);
   }
+  const cookieToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  if (cookieToken) return cookieToken;
   return null;
 }
 
@@ -74,4 +87,36 @@ export async function authenticateRequest(
       ),
     };
   }
+}
+
+/**
+ * Attach the session cookie to a NextResponse. Used by /api/auth/login when
+ * the caller is the admin web app. Mobile callers keep using the Bearer
+ * token — they ignore the cookie.
+ */
+export function attachSessionCookie(response: NextResponse, token: string): NextResponse {
+  response.cookies.set({
+    name: SESSION_COOKIE_NAME,
+    value: token,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    // 7 days — matches TOKEN_EXPIRY
+    maxAge: 60 * 60 * 24 * 7,
+  });
+  return response;
+}
+
+export function clearSessionCookie(response: NextResponse): NextResponse {
+  response.cookies.set({
+    name: SESSION_COOKIE_NAME,
+    value: "",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 0,
+  });
+  return response;
 }

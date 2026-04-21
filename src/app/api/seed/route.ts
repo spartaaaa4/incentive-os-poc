@@ -228,9 +228,10 @@ export async function POST(request: Request) {
 
     if (force) {
       await db.$executeRaw`TRUNCATE TABLE
-        incentive_ledger, audit_log, attendance, sales_transaction, target,
+        incentive_ledger, audit_log, attendance, attendance_upload, sales_transaction, target,
         campaign_payout_slab, campaign_store_target, campaign_article, campaign_config,
         product_incentive_slab, achievement_multiplier, fnl_role_split, incentive_plan,
+        approval_request, employee_admin_access,
         user_credential, employee_master, store_master
         CASCADE`;
     }
@@ -316,6 +317,68 @@ export async function POST(request: Request) {
       })),
     );
     await db.userCredential.createMany({ data: credentialData });
+
+    // ── 2a. Bootstrap admin identities (Phase 1) ───────────────────────────
+    // Pick the first SM per vertical and grant them full super-admin access
+    // (verticals=[] means "all verticals"). The remaining SMs get vertical-
+    // scoped edit + submit rights so the pilot can demo maker/checker across
+    // different admins.
+    const sms = employeeRows.filter((e) => e.role === EmployeeRole.SM);
+    const verticalsSeen = new Set<string>();
+    const superAdminIds: string[] = [];
+    const verticalAdminGrants: Array<{
+      employeeId: string; vertical: Vertical;
+    }> = [];
+    for (const sm of sms) {
+      const store = stores.find((s) => s.storeCode === sm.storeCode);
+      if (!store) continue;
+      if (!verticalsSeen.has(store.vertical)) {
+        verticalsSeen.add(store.vertical);
+        superAdminIds.push(sm.employeeId);
+      } else {
+        verticalAdminGrants.push({ employeeId: sm.employeeId, vertical: store.vertical });
+      }
+    }
+
+    if (superAdminIds.length) {
+      await db.employeeMaster.updateMany({
+        where: { employeeId: { in: superAdminIds } },
+        data: { hasAdminAccess: true },
+      });
+      await db.employeeAdminAccess.createMany({
+        data: superAdminIds.map((employeeId) => ({
+          employeeId,
+          verticals: [] as Vertical[], // super-admin = all verticals
+          canViewAll: true,
+          canEditIncentives: true,
+          canSubmitApproval: true,
+          canApprove: true,
+          canManageUsers: true,
+          canUploadData: true,
+          grantedBy: "system",
+        })),
+      });
+    }
+
+    if (verticalAdminGrants.length) {
+      await db.employeeMaster.updateMany({
+        where: { employeeId: { in: verticalAdminGrants.map((g) => g.employeeId) } },
+        data: { hasAdminAccess: true },
+      });
+      await db.employeeAdminAccess.createMany({
+        data: verticalAdminGrants.map((g) => ({
+          employeeId: g.employeeId,
+          verticals: [g.vertical],
+          canViewAll: true,
+          canEditIncentives: true,
+          canSubmitApproval: true,
+          canApprove: false, // maker only — keeps maker/checker separation
+          canManageUsers: false,
+          canUploadData: true,
+          grantedBy: "system",
+        })),
+      });
+    }
 
     // Build indexes for sales generation
     // storeCode → dept → [SA employeeIds with ACTIVE payroll]

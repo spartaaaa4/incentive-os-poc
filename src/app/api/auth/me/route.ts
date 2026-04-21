@@ -9,12 +9,25 @@ export async function GET(request: NextRequest) {
 
   const employee = await db.employeeMaster.findUnique({
     where: { employeeId: auth.user.employeeId },
-    include: { store: true },
+    include: { store: true, adminAccess: true },
   });
 
   if (!employee) {
     return NextResponse.json({ error: "Employee not found" }, { status: 404 });
   }
+
+  const hasAdminAccess = Boolean(employee.hasAdminAccess && employee.adminAccess);
+  const adminAccess = hasAdminAccess && employee.adminAccess
+    ? {
+        verticals: employee.adminAccess.verticals,
+        canViewAll: employee.adminAccess.canViewAll,
+        canEditIncentives: employee.adminAccess.canEditIncentives,
+        canSubmitApproval: employee.adminAccess.canSubmitApproval,
+        canApprove: employee.adminAccess.canApprove,
+        canManageUsers: employee.adminAccess.canManageUsers,
+        canUploadData: employee.adminAccess.canUploadData,
+      }
+    : null;
 
   return NextResponse.json({
     user: {
@@ -31,6 +44,8 @@ export async function GET(request: NextRequest) {
       city: employee.store.city,
       storeStatus: employee.store.storeStatus,
       payrollStatus: employee.payrollStatus,
+      hasAdminAccess,
+      adminAccess,
     },
   });
 }

@@ -1,7 +1,8 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { requirePermission } from "@/lib/permissions";
 
 const createPlanSchema = z.object({
   vertical: z.enum(["ELECTRONICS", "GROCERY", "FNL"]),
@@ -30,13 +31,17 @@ const defaultRoleSplits = [
   [1, 3, 60, 12, 9.2], [1, 4, 60, 10, 7.6],
 ];
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
     const body = createPlanSchema.safeParse(await request.json());
     if (!body.success) {
       return NextResponse.json({ error: body.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
     }
     const { vertical } = body.data;
+
+    const auth = await requirePermission(request, "canEditIncentives", { vertical });
+    if ("error" in auth) return auth.error;
+    const createdBy = auth.identity.employeeId;
 
     if (vertical === "ELECTRONICS") {
       const plan = await db.$transaction(async (tx) => {
@@ -48,7 +53,7 @@ export async function POST(request: Request) {
             periodType: "MONTHLY",
             status: "DRAFT",
             version: 1,
-            createdBy: "admin",
+            createdBy,
           },
         });
         await tx.productIncentiveSlab.createMany({
@@ -86,7 +91,7 @@ export async function POST(request: Request) {
             periodType: "CAMPAIGN",
             status: "DRAFT",
             version: 1,
-            createdBy: "admin",
+            createdBy,
           },
         });
         await tx.campaignConfig.create({
@@ -116,7 +121,7 @@ export async function POST(request: Request) {
             status: "DRAFT",
             version: 1,
             config: { poolPct: 1, attendanceMinDays: 5, weekDefinition: "SUNDAY_TO_SATURDAY" },
-            createdBy: "admin",
+            createdBy,
           },
         });
         await tx.fnlRoleSplit.createMany({

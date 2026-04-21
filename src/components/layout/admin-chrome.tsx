@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
-import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { Layout, Menu, Typography, Space, theme } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -13,21 +13,48 @@ import {
   Target,
   Zap,
   User,
+  Users,
   Trophy,
   Building2,
+  CalendarCheck,
+  LogOut,
 } from "lucide-react";
 import { SeedBanner } from "@/components/layout/seed-banner";
 import { SIDEBAR_BG } from "@/lib/antd-theme";
 
+type Me = {
+  employeeId: string;
+  employeeName: string;
+  role: string;
+  hasAdminAccess: boolean;
+  adminAccess: {
+    verticals: string[];
+    canViewAll: boolean;
+    canEditIncentives: boolean;
+    canApprove: boolean;
+    canManageUsers: boolean;
+  } | null;
+};
+
 const { Header, Content } = Layout;
 
-const navItems: Array<{ href: string; label: string; icon: React.ReactNode }> = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+  /** Only show this nav item when the signed-in admin has this flag. */
+  requires?: "canManageUsers";
+};
+
+const navItems: Array<NavItem> = [
   { href: "/dashboard", label: "Dashboard", icon: <Gauge size={14} /> },
   { href: "/sales", label: "Sales", icon: <ClipboardList size={14} /> },
+  { href: "/attendance", label: "Attendance", icon: <CalendarCheck size={14} /> },
   { href: "/rules", label: "Rules", icon: <Zap size={14} /> },
   { href: "/targets", label: "Targets", icon: <Target size={14} /> },
   { href: "/approvals", label: "Approvals", icon: <BarChart3 size={14} /> },
   { href: "/leaderboard", label: "Leaderboard", icon: <Trophy size={14} /> },
+  { href: "/admins", label: "Admins", icon: <Users size={14} />, requires: "canManageUsers" },
   { href: "/reference", label: "Org reference", icon: <Building2 size={14} /> },
   { href: "/data-model", label: "Data Model", icon: <Database size={14} /> },
 ];
@@ -42,17 +69,68 @@ export function AdminChrome({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { token } = theme.useToken();
+  const [me, setMe] = useState<Me | null>(null);
+  const [meChecked, setMeChecked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/me", { credentials: "include" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(String(res.status));
+        const body = await res.json();
+        return body.user as Me;
+      })
+      .then((user) => {
+        if (cancelled) return;
+        if (!user.hasAdminAccess) {
+          router.replace(`/login?next=${encodeURIComponent(pathname || "/dashboard")}`);
+          return;
+        }
+        setMe(user);
+        setMeChecked(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        router.replace(`/login?next=${encodeURIComponent(pathname || "/dashboard")}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, router]);
+
+  async function onLogout() {
+    await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
+    router.replace("/login");
+  }
+
+  const visibleNav = useMemo(() => {
+    return navItems.filter((item) => {
+      if (!item.requires) return true;
+      return Boolean(me?.adminAccess?.[item.requires]);
+    });
+  }, [me]);
 
   const selectedKey = useMemo(() => {
-    const matches = navItems.filter(
+    const matches = visibleNav.filter(
       (i) => pathname === i.href || pathname.startsWith(`${i.href}/`),
     );
     if (matches.length === 0) return pathname;
     return matches.sort((a, b) => b.href.length - a.href.length)[0]!.href;
-  }, [pathname]);
+  }, [pathname, visibleNav]);
 
-  const menuItems: MenuProps["items"] = navItems.map((item) => ({
+  // Don't render the admin chrome until we've verified admin access. Prevents
+  // a flash of UI before the /login redirect fires.
+  if (!meChecked || !me) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b", fontSize: 14 }}>
+        Loading…
+      </div>
+    );
+  }
+
+  const menuItems: MenuProps["items"] = visibleNav.map((item) => ({
     key: item.href,
     icon: item.icon,
     label: (
@@ -112,9 +190,32 @@ export function AdminChrome({
             lineHeight: "56px",
           }}
         />
-        <Space size="small" style={{ color: "rgba(255,255,255,0.55)", fontSize: 12 }}>
+        <Space size="small" style={{ color: "rgba(255,255,255,0.65)", fontSize: 12 }}>
           <User size={14} />
-          <span className="hidden sm:inline">Admin</span>
+          <span className="hidden sm:inline">{me?.employeeName ?? "…"}</span>
+          {me && (
+            <button
+              type="button"
+              onClick={onLogout}
+              title="Sign out"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                background: "transparent",
+                color: "rgba(255,255,255,0.7)",
+                border: "1px solid rgba(255,255,255,0.2)",
+                padding: "4px 8px",
+                borderRadius: 6,
+                cursor: "pointer",
+                fontSize: 12,
+                marginLeft: 8,
+              }}
+            >
+              <LogOut size={12} />
+              <span className="hidden sm:inline">Sign out</span>
+            </button>
+          )}
         </Space>
       </Header>
       <Content style={{ background: token.colorBgLayout }}>

@@ -67,6 +67,16 @@ type TargetApprovalDetail = {
   rowCount: number;
 };
 
+type ApprovalChain = {
+  approvalRequestId: number | null;
+  submittedBy: string;
+  submittedByName: string | null;
+  submittedAt: string;
+  submissionNote: string | null;
+  batchKey: string | null;
+  priorRevisions: number;
+};
+
 type PendingPlanItem = {
   id: number;
   entityType: "PLAN";
@@ -76,6 +86,7 @@ type PendingPlanItem = {
   submittedBy: string;
   submittedAt: string;
   summary: string;
+  chain: ApprovalChain;
   planDetail: PlanApprovalDetail;
 };
 
@@ -83,11 +94,13 @@ type PendingTargetItem = {
   id: string;
   entityType: "TARGET";
   entityId: number;
+  batchKey: string | null;
   title: string;
   vertical: string;
   submittedBy: string;
   submittedAt: string;
   summary: string;
+  chain: ApprovalChain;
   targetDetail: TargetApprovalDetail;
 };
 
@@ -320,7 +333,7 @@ export function ApprovalsView() {
     entityType: string,
     entityId: number,
     action: "APPROVED" | "REJECTED",
-    opts?: { reason?: string; approvalComment?: string },
+    opts?: { reason?: string; approvalComment?: string; batchKey?: string | null },
   ) => {
     setActing(true);
     setActionError(null);
@@ -331,6 +344,7 @@ export function ApprovalsView() {
         body: JSON.stringify({
           entityType,
           entityId,
+          batchKey: opts?.batchKey ?? undefined,
           action,
           reason: opts?.reason,
           approvalComment: opts?.approvalComment,
@@ -398,8 +412,21 @@ export function ApprovalsView() {
                   <h3 className="font-semibold text-slate-900">{item.title}</h3>
                   <p className="text-sm text-slate-600 mt-1">{item.summary}</p>
                   <p className="text-xs text-slate-400 mt-2">
-                    Submitted by {item.submittedBy} · {new Date(item.submittedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
+                    Submitted by <strong className="text-slate-600">{item.chain.submittedByName ?? item.submittedBy}</strong>
+                    {item.chain.submittedByName && <span className="text-slate-400"> ({item.submittedBy})</span>}
+                    {" · "}
+                    {new Date(item.submittedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
+                    {item.chain.priorRevisions > 0 && (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                        revision #{item.chain.priorRevisions + 1}
+                      </span>
+                    )}
                   </p>
+                  {item.chain.submissionNote && (
+                    <p className="text-xs text-slate-500 mt-2 italic border-l-2 border-slate-200 pl-2">
+                      &ldquo;{item.chain.submissionNote}&rdquo;
+                    </p>
+                  )}
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -546,6 +573,7 @@ export function ApprovalsView() {
                 onClick={() =>
                   void handleAction(approveItem.entityType, approveItem.entityId, "APPROVED", {
                     approvalComment: approveComment.trim() || undefined,
+                    batchKey: approveItem.entityType === "TARGET" ? approveItem.chain.batchKey : undefined,
                   })}
                 disabled={acting}
                 className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
@@ -584,6 +612,7 @@ export function ApprovalsView() {
                 onClick={() =>
                   void handleAction(rejectItem.entityType, rejectItem.entityId, "REJECTED", {
                     reason: rejectReason.trim(),
+                    batchKey: rejectItem.entityType === "TARGET" ? rejectItem.chain.batchKey : undefined,
                   })}
                 disabled={acting || rejectReason.trim().length < 5}
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"

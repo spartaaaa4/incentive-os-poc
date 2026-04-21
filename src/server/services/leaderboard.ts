@@ -7,7 +7,8 @@ import { db } from "@/lib/db";
  * (sum of active period sales ÷ sum of active period targets) within a single
  * vertical and city.
  *
- * There is no user-level leaderboard — the product only ranks stores.
+ * Reads from `store_period_rollup` maintained by the calculation coordinator.
+ * Only rollup rows tagged with the current successful run are considered.
  */
 
 function asNumber(value: unknown): number {
@@ -141,49 +142,49 @@ export async function getStoreLeaderboard(input: {
     select: { storeCode: true, storeName: true, city: true },
   });
   const storeCodes = stores.map((s) => s.storeCode);
-  if (!storeCodes.length) {
-    return {
-      metric: "STORE_TARGET_ACHIEVEMENT",
-      rankBy: "achievementPct",
-      scope: "stores",
+  const emptyResult: StoreLeaderboardResult = {
+    metric: "STORE_TARGET_ACHIEVEMENT",
+    rankBy: "achievementPct",
+    scope: "stores",
+    vertical,
+    city,
+    period,
+    viewer: input.viewer
+      ? { storeCode: viewerStoreCode, storeName: viewerStoreName, city, vertical }
+      : null,
+    leaderboard: [],
+    myRank: { rank: 0, storesAhead: 0, totalStores: 0, storeCode: viewerStoreCode },
+  };
+  if (!storeCodes.length) return emptyResult;
+
+  // Resolve the active plan for this vertical — leaderboard is plan-scoped so
+  // sums across weekly/monthly rollup grain work without cross-plan double count.
+  const activePlan = await db.incentivePlan.findFirst({
+    where: { vertical, status: "ACTIVE" },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  if (!activePlan) return emptyResult;
+
+  const rollups = await db.storePeriodRollup.findMany({
+    where: {
+      planId: activePlan.id,
       vertical,
       city,
-      period,
-      viewer: input.viewer
-        ? { storeCode: viewerStoreCode, storeName: viewerStoreName, city, vertical }
-        : null,
-      leaderboard: [],
-      myRank: { rank: 0, storesAhead: 0, totalStores: 0, storeCode: viewerStoreCode },
-    };
-  }
-
-  const [targets, sales] = await Promise.all([
-    db.target.findMany({
-      where: {
-        storeCode: { in: storeCodes },
-        vertical,
-        status: "ACTIVE",
-        periodStart: { lte: periodEnd },
-        periodEnd: { gte: periodStart },
-      },
-      select: { storeCode: true, targetValue: true },
-    }),
-    db.salesTransaction.groupBy({
-      by: ["storeCode"] as const,
-      _sum: { grossAmount: true },
-      where: {
-        storeCode: { in: storeCodes },
-        vertical,
-        transactionDate: { gte: periodStart, lte: periodEnd },
-        transactionType: "NORMAL",
-        channel: "OFFLINE",
-      },
-    }),
-  ]);
+      storeCode: { in: storeCodes },
+      periodStart: { gte: periodStart, lte: periodEnd },
+      periodEnd: { gte: periodStart, lte: periodEnd },
+      lastRun: { is: { isCurrent: true, status: "SUCCEEDED" } },
+    },
+    select: { storeCode: true, targetValue: true, actualSales: true },
+  });
 
   const targetByStore = new Map<string, number>();
-  for (const t of targets) targetByStore.set(t.storeCode, (targetByStore.get(t.storeCode) ?? 0) + asNumber(t.targetValue));
-  const salesByStore = new Map(sales.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
+  const salesByStore = new Map<string, number>();
+  for (const r of rollups) {
+    targetByStore.set(r.storeCode, (targetByStore.get(r.storeCode) ?? 0) + asNumber(r.targetValue));
+    salesByStore.set(r.storeCode, (salesByStore.get(r.storeCode) ?? 0) + asNumber(r.actualSales));
+  }
 
   const raw = stores.map((s) => {
     const target = targetByStore.get(s.storeCode) ?? 0;

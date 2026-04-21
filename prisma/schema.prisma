@@ -89,6 +89,23 @@ enum CalculationStatus {
   FINAL
 }
 
+enum CalcRunStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SUPERSEDED
+}
+
+enum CalcRunTrigger {
+  INGESTION
+  MANUAL_RECOMPUTE
+  SCHEDULED_CRON
+  PLAN_PUBLISH
+  ATTENDANCE_UPDATE
+  BACKFILL
+}
+
 enum AuditEntityType {
   PLAN
   TARGET
@@ -102,6 +119,45 @@ enum AuditAction {
   APPROVED
   REJECTED
   CALCULATED
+}
+
+/// Entity types a human decision chain can attach to. PAYOUT is reserved for
+/// the payout-disbursement workflow that lands in a later phase — today it is
+/// unused but writing it into the enum now avoids a future migration.
+enum ApprovalEntityType {
+  PLAN
+  TARGET
+  PAYOUT
+}
+
+enum ApprovalDecision {
+  PENDING
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+/// Lifecycle of an `IngestionBatch`. Firehose POSTs from Reliance land as
+/// RECEIVED → rows written to sales_transaction → PROCESSING while the
+/// recompute job runs → COMPLETED (all good), PARTIAL (some rows rejected
+/// but the batch is closed), or FAILED (insert or recompute blew up).
+enum IngestionStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+/// Queue state for a deferred recompute. `POST /api/ingest/sales` enqueues
+/// one of these per batch instead of running the engine in-request. The cron
+/// worker (`/api/cron/run-jobs`) claims PENDING jobs with `SELECT ... FOR
+/// UPDATE SKIP LOCKED` semantics so multiple workers don't double-claim.
+enum RecomputeJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
 }
 
 model StoreMaster {
@@ -124,22 +180,108 @@ model StoreMaster {
 }
 
 model EmployeeMaster {
-  employeeId      String         @id @map("employee_id") @db.VarChar(64)
-  employeeName    String         @map("employee_name")
-  role            EmployeeRole
-  storeCode       String         @map("store_code") @db.VarChar(32)
-  department      String?
-  payrollStatus   PayrollStatus  @default(ACTIVE) @map("payroll_status")
-  dateOfJoining   DateTime       @map("date_of_joining") @db.Date
-  dateOfExit      DateTime?      @map("date_of_exit") @db.Date
-  store           StoreMaster    @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
-  attendance      Attendance[]
-  sales           SalesTransaction[]
-  incentiveLedger IncentiveLedger[]
-  credential      UserCredential?
+  employeeId         String             @id @map("employee_id") @db.VarChar(64)
+  employeeName       String             @map("employee_name")
+  role               EmployeeRole
+  storeCode          String             @map("store_code") @db.VarChar(32)
+  department         String?
+  payrollStatus      PayrollStatus      @default(ACTIVE) @map("payroll_status")
+  dateOfJoining      DateTime           @map("date_of_joining") @db.Date
+  dateOfExit         DateTime?          @map("date_of_exit") @db.Date
+  /// Denormalized flag for fast auth/middleware checks. Mirrors whether
+  /// an `EmployeeAdminAccess` row exists — kept in sync by the access
+  /// grant/revoke helpers. `true` means this employee can log into the
+  /// admin web app; granular capabilities live in `adminAccess`.
+  hasAdminAccess     Boolean            @default(false) @map("has_admin_access")
+  store              StoreMaster        @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+  attendance         Attendance[]
+  sales              SalesTransaction[]
+  incentiveLedger    IncentiveLedger[]
+  credential         UserCredential?
+  adminAccess        EmployeeAdminAccess?
+  submittedApprovals ApprovalRequest[]  @relation("ApprovalSubmitter")
+  decidedApprovals   ApprovalRequest[]  @relation("ApprovalDecider")
 
   @@index([storeCode])
+  @@index([hasAdminAccess])
   @@map("employee_master")
+}
+
+/// Granular admin capabilities for an employee flagged `hasAdminAccess = true`.
+/// One row per admin; zero rows means the employee cannot log into the admin
+/// web app even if their credential exists. `verticals` is an allow-list —
+/// empty array means "all verticals" (super-admin).
+///
+/// Permission flags are checked by `requirePermission(user, flag, {vertical})`
+/// in `src/lib/permissions.ts`. The scope rules:
+///   - canViewAll:        read any vertical's dashboard/leaderboard
+///   - canEditIncentives: create/edit plans, campaigns, slabs, multipliers
+///   - canSubmitApproval: flip a plan or target batch to SUBMITTED
+///   - canApprove:        approve/reject a submitted ApprovalRequest
+///   - canManageUsers:    grant/revoke admin access for other employees
+///   - canUploadData:     attendance upload, sales CSV import
+model EmployeeAdminAccess {
+  id                Int            @id @default(autoincrement())
+  employeeId        String         @unique @map("employee_id") @db.VarChar(64)
+  verticals         Vertical[]
+  canViewAll        Boolean        @default(false) @map("can_view_all")
+  canEditIncentives Boolean        @default(false) @map("can_edit_incentives")
+  canSubmitApproval Boolean        @default(false) @map("can_submit_approval")
+  canApprove        Boolean        @default(false) @map("can_approve")
+  canManageUsers    Boolean        @default(false) @map("can_manage_users")
+  canUploadData     Boolean        @default(false) @map("can_upload_data")
+  grantedBy         String?        @map("granted_by")
+  grantedAt         DateTime       @default(now()) @map("granted_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
+  employee          EmployeeMaster @relation(fields: [employeeId], references: [employeeId], onDelete: Cascade)
+
+  @@map("employee_admin_access")
+}
+
+/// One row per decision chain on a Plan / Target batch / Payout. Captures the
+/// before-after-chain-after story: who submitted, which approvers have seen
+/// it, who decided, and if re-submitted, which prior request was superseded.
+///
+/// The `changeSnapshot` JSON is the plan/target diff at submission time.
+/// Reads hydrate the UI: pending queue, history tab, and audit trail.
+model ApprovalRequest {
+  id              Int                  @id @default(autoincrement())
+  entityType      ApprovalEntityType   @map("entity_type")
+  /// For PLAN: incentive_plan.id. For TARGET: the lowest target.id in the
+  /// submitted batch (used as a stable reference for drill-in).
+  entityId        Int                  @map("entity_id")
+  /// Groups multiple rows into one logical submission. For TARGET, this is
+  /// typically "<vertical>-<periodType>" so a CSV import creates one
+  /// ApprovalRequest even though it writes N target rows.
+  batchKey        String?              @map("batch_key")
+  vertical        Vertical?
+  title           String
+  summary         String?
+  changeSnapshot  Json?                @map("change_snapshot")
+  submissionNote  String?              @map("submission_note")
+  submittedBy     String               @map("submitted_by") @db.VarChar(64)
+  submittedAt     DateTime             @default(now()) @map("submitted_at")
+  /// JSON array of { employeeId, at } entries — approvers who have loaded
+  /// the detail view. Used by the UI to surface "seen by X".
+  seenBy          Json                 @default("[]") @map("seen_by")
+  decision        ApprovalDecision     @default(PENDING)
+  decidedBy       String?              @map("decided_by") @db.VarChar(64)
+  decidedAt       DateTime?            @map("decided_at")
+  decisionNote    String?              @map("decision_note")
+  supersededById  Int?                 @map("superseded_by_id")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+
+  submitter       EmployeeMaster       @relation("ApprovalSubmitter", fields: [submittedBy], references: [employeeId], onDelete: Restrict)
+  decider         EmployeeMaster?      @relation("ApprovalDecider", fields: [decidedBy], references: [employeeId], onDelete: Restrict)
+  supersededBy    ApprovalRequest?     @relation("ApprovalSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes      ApprovalRequest[]    @relation("ApprovalSupersedes")
+
+  @@index([decision, submittedAt])
+  @@index([entityType, entityId])
+  @@index([vertical, decision])
+  @@index([batchKey])
+  @@map("approval_request")
 }
 
 model UserCredential {
@@ -163,12 +305,33 @@ model Attendance {
   storeCode  String           @map("store_code") @db.VarChar(32)
   date       DateTime         @db.Date
   status     AttendanceStatus
+  source     String?          @default("upload")
+  uploadId   Int?             @map("upload_id")
   employee   EmployeeMaster   @relation(fields: [employeeId], references: [employeeId], onDelete: Restrict)
   store      StoreMaster      @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
+  upload     AttendanceUpload? @relation(fields: [uploadId], references: [id], onDelete: SetNull)
 
   @@unique([employeeId, date])
   @@index([storeCode, date])
   @@map("attendance")
+}
+
+/// Batch record for an attendance upload. One row per uploaded file/API push.
+/// Lets us audit "where did this attendance data come from" and recompute
+/// F&L incentives for the periods the batch touches.
+model AttendanceUpload {
+  id             Int          @id @default(autoincrement())
+  uploadedBy     String       @map("uploaded_by")
+  fileName       String?      @map("file_name")
+  rowCount       Int          @default(0) @map("row_count")
+  periodStart    DateTime?    @map("period_start") @db.Date
+  periodEnd      DateTime?    @map("period_end") @db.Date
+  storeCodes     String[]     @map("store_codes")
+  uploadedAt     DateTime     @default(now()) @map("uploaded_at")
+  attendanceRows Attendance[]
+
+  @@index([uploadedAt])
+  @@map("attendance_upload")
 }
 
 model SalesTransaction {
@@ -212,11 +375,13 @@ model Target {
   status            ApprovalStatus @default(DRAFT)
   submittedBy       String?        @map("submitted_by")
   approvedBy        String?        @map("approved_by")
+  batchKey          String?        @map("batch_key") @db.VarChar(64)
   createdAt         DateTime       @default(now()) @map("created_at")
   store             StoreMaster    @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
 
   @@index([storeCode, vertical, periodStart, periodEnd])
   @@index([status, periodType])
+  @@index([batchKey])
   @@map("target")
 }
 
@@ -241,10 +406,33 @@ model IncentivePlan {
   achievementMultipliers AchievementMultiplier[]
   campaignConfigs       CampaignConfig[]
   fnlRoleSplits         FnlRoleSplit[]
+  applicability         PlanApplicability[]
   incentiveLedger       IncentiveLedger[]
+  calculationRuns       CalculationRun[]
+  employeePeriodRollups EmployeePeriodRollup[]
+  storePeriodRollups    StorePeriodRollup[]
 
   @@index([vertical, status, effectiveFrom, effectiveTo])
   @@map("incentive_plan")
+}
+
+/// Scoping rules for a plan: which vertical/role/department combinations it applies to.
+/// A plan with zero applicability rows applies to its vertical only (legacy fallback).
+/// A plan with multiple rows applies to the UNION of those rules.
+/// Employees can earn from multiple concurrent plans; each matching plan produces its
+/// own ledger + rollup rows.
+model PlanApplicability {
+  id           Int           @id @default(autoincrement())
+  planId       Int           @map("plan_id")
+  vertical     Vertical
+  role         EmployeeRole?
+  department   String?
+  priority     Int           @default(0)
+  plan         IncentivePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([vertical, role, department])
+  @@index([planId])
+  @@map("plan_applicability")
 }
 
 model ProductIncentiveSlab {
@@ -350,6 +538,7 @@ model IncentiveLedger {
   id                 Int               @id @default(autoincrement())
   planId             Int               @map("plan_id")
   campaignId         Int?              @map("campaign_id")
+  calculationRunId   String?           @map("calculation_run_id") @db.Uuid
   employeeId         String            @map("employee_id") @db.VarChar(64)
   storeCode          String            @map("store_code") @db.VarChar(32)
   vertical           Vertical
@@ -364,13 +553,198 @@ model IncentiveLedger {
   calculatedAt       DateTime          @default(now()) @map("calculated_at")
   plan               IncentivePlan     @relation(fields: [planId], references: [id], onDelete: Restrict)
   campaign           CampaignConfig?   @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  calculationRun     CalculationRun?   @relation(fields: [calculationRunId], references: [id], onDelete: SetNull)
   employee           EmployeeMaster    @relation(fields: [employeeId], references: [employeeId], onDelete: Restrict)
   store              StoreMaster       @relation(fields: [storeCode], references: [storeCode], onDelete: Restrict)
 
   @@index([storeCode, vertical, periodStart, periodEnd])
   @@index([employeeId, periodStart, periodEnd])
   @@index([planId, campaignId])
+  @@index([calculationRunId])
   @@map("incentive_ledger")
+}
+
+/// A single calculation pass for a (plan, period) scope. The engine writes new
+/// ledger + rollup rows tagged with this run's id. On success, the prior run
+/// for the same scope is flipped to SUPERSEDED in the same transaction. Reads
+/// filter to runs where `isCurrent = true AND status = SUCCEEDED`.
+///
+/// History is preserved — superseded runs stay queryable for audit and
+/// time-travel. The "current" ledger is defined by the latest successful run.
+model CalculationRun {
+  id                String               @id @default(uuid()) @db.Uuid
+  planId            Int                  @map("plan_id")
+  planVersion       Int                  @map("plan_version")
+  vertical          Vertical
+  periodStart       DateTime             @map("period_start") @db.Date
+  periodEnd         DateTime             @map("period_end") @db.Date
+  scopeStoreCodes   String[]             @map("scope_store_codes")
+  status            CalcRunStatus        @default(PENDING)
+  isCurrent         Boolean              @default(false) @map("is_current")
+  trigger           CalcRunTrigger
+  triggeredByUserId String?              @map("triggered_by_user_id")
+  inputsHash        String?              @map("inputs_hash")
+  ledgerRowCount    Int                  @default(0) @map("ledger_row_count")
+  startedAt         DateTime             @default(now()) @map("started_at")
+  completedAt       DateTime?            @map("completed_at")
+  errorMessage      String?              @map("error_message") @db.Text
+  plan              IncentivePlan        @relation(fields: [planId], references: [id], onDelete: Restrict)
+  ledgerEntries     IncentiveLedger[]
+  employeeRollups   EmployeePeriodRollup[]
+  storeRollups      StorePeriodRollup[]
+  dailyRollups      StoreDailyRollup[]
+
+  @@index([planId, periodStart, periodEnd, status])
+  @@index([planId, periodStart, isCurrent])
+  @@index([status, startedAt])
+  @@map("calculation_run")
+}
+
+/// Per-day × store × vertical sales rollup. Maintained by the calculation engine
+/// inside each successful run. Primary use: dashboard daily trendlines and
+/// ingestion reconciliation vs raw totals. Not a replacement for raw
+/// transaction drilldown — use `sales_transaction` for txn-level UI.
+model StoreDailyRollup {
+  id               Int             @id @default(autoincrement())
+  storeCode        String          @map("store_code") @db.VarChar(32)
+  vertical         Vertical
+  dayKey           DateTime        @map("day_key") @db.Date
+  txnCount         Int             @default(0) @map("txn_count")
+  grossAmount      Decimal         @default(0) @map("gross_amount") @db.Decimal(18, 2)
+  netAmount        Decimal         @default(0) @map("net_amount") @db.Decimal(18, 2)
+  unitsSold        Int             @default(0) @map("units_sold")
+  lastRunId        String?         @map("last_run_id") @db.Uuid
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  lastRun          CalculationRun? @relation(fields: [lastRunId], references: [id], onDelete: SetNull)
+
+  @@unique([storeCode, vertical, dayKey])
+  @@index([vertical, dayKey])
+  @@index([dayKey])
+  @@map("store_daily_rollup")
+}
+
+/// Per-employee × plan × period snapshot. Primary read path for mobile hero
+/// cards and drill-in employee detail. A single employee can have multiple
+/// rows for the same period if they match multiple concurrent plans.
+model EmployeePeriodRollup {
+  id                Int             @id @default(autoincrement())
+  employeeId        String          @map("employee_id") @db.VarChar(64)
+  planId            Int             @map("plan_id")
+  storeCode         String          @map("store_code") @db.VarChar(32)
+  vertical          Vertical
+  periodStart       DateTime        @map("period_start") @db.Date
+  periodEnd         DateTime        @map("period_end") @db.Date
+  earned            Decimal         @default(0) @db.Decimal(14, 2)
+  eligible          Decimal         @default(0) @db.Decimal(14, 2)
+  potential         Decimal         @default(0) @db.Decimal(14, 2)
+  paid              Decimal         @default(0) @db.Decimal(14, 2)
+  achievementPct    Decimal?        @map("achievement_pct") @db.Decimal(8, 2)
+  multiplierApplied Decimal?        @map("multiplier_applied") @db.Decimal(8, 2)
+  lastRunId         String          @map("last_run_id") @db.Uuid
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  plan              IncentivePlan   @relation(fields: [planId], references: [id], onDelete: Restrict)
+  lastRun           CalculationRun  @relation(fields: [lastRunId], references: [id], onDelete: Restrict)
+
+  @@unique([employeeId, planId, periodStart])
+  @@index([planId, periodStart, periodEnd])
+  @@index([storeCode, vertical, periodStart])
+  @@index([employeeId, periodStart])
+  @@map("employee_period_rollup")
+}
+
+/// Per-store × plan × period snapshot. Primary read path for the admin
+/// dashboard store list and the mobile leaderboard. Rank-within-city is
+/// pre-computed during the calculation run so leaderboard reads are a single
+/// indexed query instead of a full-month groupBy over raw transactions.
+model StorePeriodRollup {
+  id              Int             @id @default(autoincrement())
+  storeCode       String          @map("store_code") @db.VarChar(32)
+  planId          Int             @map("plan_id")
+  vertical        Vertical
+  city            String
+  state           String
+  periodStart     DateTime        @map("period_start") @db.Date
+  periodEnd       DateTime        @map("period_end") @db.Date
+  targetValue     Decimal         @default(0) @map("target_value") @db.Decimal(18, 2)
+  actualSales     Decimal         @default(0) @map("actual_sales") @db.Decimal(18, 2)
+  achievementPct  Decimal         @default(0) @map("achievement_pct") @db.Decimal(8, 2)
+  totalIncentive  Decimal         @default(0) @map("total_incentive") @db.Decimal(14, 2)
+  employeeCount   Int             @default(0) @map("employee_count")
+  earningCount    Int             @default(0) @map("earning_count")
+  rankInCity      Int?            @map("rank_in_city")
+  lastRunId       String          @map("last_run_id") @db.Uuid
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  plan            IncentivePlan   @relation(fields: [planId], references: [id], onDelete: Restrict)
+  lastRun         CalculationRun  @relation(fields: [lastRunId], references: [id], onDelete: Restrict)
+
+  @@unique([storeCode, planId, periodStart])
+  @@index([vertical, city, periodStart, achievementPct(sort: Desc)])
+  @@index([vertical, periodStart])
+  @@index([planId, periodStart])
+  @@map("store_period_rollup")
+}
+
+/// A single bulk sales ingest from an upstream system (Reliance POS firehose,
+/// CSV upload, etc.). Dedup is by `idempotencyKey` — retried POSTs with the
+/// same key replay the stored response instead of re-inserting. Row-level
+/// dedup still relies on `SalesTransaction.transactionId` being the PK.
+///
+/// Inserts happen synchronously inside the POST; the recompute is deferred
+/// to a `RecomputeJob`, so the ingest endpoint returns 202 in sub-second
+/// even for 5K-row batches.
+model IngestionBatch {
+  id              Int              @id @default(autoincrement())
+  idempotencyKey  String           @unique @map("idempotency_key") @db.VarChar(128)
+  source          String           @default("API") @map("source") @db.VarChar(32)
+  batchRef        String?          @map("batch_ref") @db.VarChar(128)
+  submittedBy     String           @default("service") @map("submitted_by")
+  status          IngestionStatus  @default(RECEIVED)
+  rowsSubmitted   Int              @default(0) @map("rows_submitted")
+  rowsAccepted    Int              @default(0) @map("rows_accepted")
+  rowsRejected   Int              @default(0) @map("rows_rejected")
+  /// Array of { row: number, error: string } for rejected rows. Capped at
+  /// 100 entries so a malformed batch doesn't balloon the row.
+  errorLog        Json?            @map("error_log")
+  /// Min and max transactionDate in the batch — used by the recompute worker
+  /// to size the date span without scanning the inserted rows again.
+  minTxnDate      DateTime?        @map("min_txn_date") @db.Date
+  maxTxnDate      DateTime?        @map("max_txn_date") @db.Date
+  /// Distinct storeCodes touched by this batch. Drives recompute scope.
+  storeCodes      String[]         @map("store_codes")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  completedAt     DateTime?        @map("completed_at")
+  recomputeJobs   RecomputeJob[]
+
+  @@index([status, createdAt])
+  @@index([createdAt])
+  @@map("ingestion_batch")
+}
+
+/// Deferred recompute work. An ingest or manual trigger enqueues one row;
+/// the cron worker (`/api/cron/run-jobs`) claims oldest-PENDING via
+/// SELECT FOR UPDATE SKIP LOCKED, runs `recalculateByDateSpan`, marks
+/// COMPLETED/FAILED. Decoupling lets ingestion return 202 immediately
+/// instead of blocking the HTTP request on a 30–120s recompute.
+model RecomputeJob {
+  id                Int                @id @default(autoincrement())
+  status            RecomputeJobStatus @default(PENDING)
+  trigger           CalcRunTrigger
+  storeCodes        String[]           @map("store_codes")
+  periodStart       DateTime           @map("period_start") @db.Date
+  periodEnd         DateTime           @map("period_end") @db.Date
+  ingestionBatchId  Int?               @map("ingestion_batch_id")
+  enqueuedBy        String             @default("system") @map("enqueued_by")
+  claimedAt         DateTime?          @map("claimed_at")
+  completedAt       DateTime?          @map("completed_at")
+  attempts          Int                @default(0)
+  errorMessage      String?            @map("error_message") @db.Text
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+  ingestionBatch    IngestionBatch?    @relation(fields: [ingestionBatchId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([ingestionBatchId])
+  @@map("recompute_job")
 }
 
 model AuditLog {

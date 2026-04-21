@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/auth";
+import { verifyToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 
+/**
+ * Routes that do NOT require a session token at the middleware layer. Some of
+ * these (writes like `/api/rules/submit`, `/api/approvals/action`) still run
+ * `requirePermission(...)` inside the handler — middleware just won't reject
+ * an anonymous caller upfront. That preserves read-only flows (mobile app,
+ * admin dashboard reads) while letting handlers enforce RBAC.
+ */
 const PUBLIC_ROUTES = [
   "/api/auth/login",
+  "/api/auth/logout",
   "/api/auth/me",
   "/api/health",
   "/api/dashboard",
@@ -15,6 +23,7 @@ const PUBLIC_ROUTES = [
   "/api/stores",
   "/api/recalculate",
   "/api/leaderboard",
+  "/api/attendance",
 ];
 
 const INTERNAL_ROUTES = [
@@ -40,6 +49,26 @@ function corsHeaders(origin: string | null): Record<string, string> {
   };
 }
 
+function extractToken(request: NextRequest): string | null {
+  const header = request.headers.get("authorization");
+  if (header?.startsWith("Bearer ")) return header.slice(7);
+  return request.cookies.get(SESSION_COOKIE_NAME)?.value ?? null;
+}
+
+function attachUserHeaders(headers: Headers, token: string): boolean {
+  try {
+    const payload = verifyToken(token);
+    headers.set("x-user-employer-id", payload.employerId);
+    headers.set("x-user-employee-id", payload.employeeId);
+    headers.set("x-user-role", payload.role);
+    headers.set("x-user-store-code", payload.storeCode);
+    if (payload.hasAdminAccess) headers.set("x-user-has-admin-access", "1");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -54,8 +83,14 @@ export function middleware(request: NextRequest) {
     return new NextResponse(null, { status: 204, headers });
   }
 
+  const token = extractToken(request);
+
   if (PUBLIC_ROUTES.some((route) => pathname.startsWith(route))) {
-    const response = NextResponse.next();
+    // Public: pass through. If the caller sent a valid token, attach user
+    // headers so handlers can do their own permission check when needed.
+    const requestHeaders = new Headers(request.headers);
+    if (token) attachUserHeaders(requestHeaders, token);
+    const response = NextResponse.next({ request: { headers: requestHeaders } });
     Object.entries(headers).forEach(([k, v]) => response.headers.set(k, v));
     return response;
   }
@@ -70,34 +105,24 @@ export function middleware(request: NextRequest) {
     return response;
   }
 
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
+  if (!token) {
     return NextResponse.json(
       { error: "Missing authorization token" },
       { status: 401, headers },
     );
   }
 
-  try {
-    const payload = verifyToken(authHeader.slice(7));
-
-    const requestHeaders = new Headers(request.headers);
-    requestHeaders.set("x-user-employer-id", payload.employerId);
-    requestHeaders.set("x-user-employee-id", payload.employeeId);
-    requestHeaders.set("x-user-role", payload.role);
-    requestHeaders.set("x-user-store-code", payload.storeCode);
-
-    const response = NextResponse.next({
-      request: { headers: requestHeaders },
-    });
-    Object.entries(headers).forEach(([k, v]) => response.headers.set(k, v));
-    return response;
-  } catch {
+  const requestHeaders = new Headers(request.headers);
+  if (!attachUserHeaders(requestHeaders, token)) {
     return NextResponse.json(
       { error: "Invalid or expired token" },
       { status: 401, headers },
     );
   }
+
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  Object.entries(headers).forEach(([k, v]) => response.headers.set(k, v));
+  return response;
 }
 
 export const config = {

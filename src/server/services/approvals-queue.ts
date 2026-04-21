@@ -81,6 +81,21 @@ export type TargetApprovalDetail = {
   rowCount: number;
 };
 
+/**
+ * Submitter + decider chain we surface in the approvals UI. Populated from the
+ * ApprovalRequest + EmployeeMaster lookup.
+ */
+export type ApprovalChain = {
+  approvalRequestId: number | null;
+  submittedBy: string;
+  submittedByName: string | null;
+  submittedAt: string;
+  submissionNote: string | null;
+  batchKey: string | null;
+  /** number of prior SUPERSEDED requests for the same entity (i.e. re-edits). */
+  priorRevisions: number;
+};
+
 export type PendingPlanItem = {
   id: number;
   entityType: "PLAN";
@@ -90,6 +105,7 @@ export type PendingPlanItem = {
   submittedBy: string;
   submittedAt: string;
   summary: string;
+  chain: ApprovalChain;
   planDetail: PlanApprovalDetail;
 };
 
@@ -97,11 +113,13 @@ export type PendingTargetItem = {
   id: string;
   entityType: "TARGET";
   entityId: number;
+  batchKey: string | null;
   title: string;
   vertical: string;
   submittedBy: string;
   submittedAt: string;
   summary: string;
+  chain: ApprovalChain;
   targetDetail: TargetApprovalDetail;
 };
 
@@ -187,7 +205,7 @@ function targetRowsFromList(
 }
 
 export async function fetchPendingApprovalItems(): Promise<PendingApprovalItem[]> {
-  const [plans, targets] = await Promise.all([
+  const [plans, targets, pendingRequests] = await Promise.all([
     db.incentivePlan.findMany({
       where: { status: "SUBMITTED" },
       include: {
@@ -203,47 +221,129 @@ export async function fetchPendingApprovalItems(): Promise<PendingApprovalItem[]
       include: { store: true },
       orderBy: { createdAt: "desc" },
     }),
+    db.approvalRequest.findMany({
+      where: { decision: "PENDING" },
+      include: { submitter: { select: { employeeId: true, employeeName: true } } },
+      orderBy: { submittedAt: "desc" },
+    }),
   ]);
 
-  const planItems: PendingPlanItem[] = plans.map((p) => ({
-    id: p.id,
-    entityType: "PLAN",
-    entityId: p.id,
-    title: p.planName,
-    vertical: p.vertical,
-    submittedBy: p.submittedBy ?? "admin",
-    submittedAt: p.updatedAt.toISOString(),
-    summary:
-      p.formulaType === "PER_UNIT"
-        ? `Electronics-style plan — ${p.productIncentiveSlabs.length} product slabs, ${p.achievementMultipliers.length} achievement tiers`
-        : p.formulaType === "CAMPAIGN_SLAB"
-          ? `Grocery campaign plan — ${p.campaignConfigs.length} campaign(s)`
-          : `F&L weekly pool — ${p.fnlRoleSplits.length} role-split row(s)`,
-    planDetail: planDetailFromDb(p),
-  }));
-
-  const targetGroups = new Map<string, typeof targets>();
-  for (const t of targets) {
-    const key = `${t.vertical}-${t.periodType}`;
-    const list = targetGroups.get(key) ?? [];
-    list.push(t);
-    targetGroups.set(key, list);
+  // Count of SUPERSEDED requests per (entityType, entityId/batchKey) for the
+  // "N prior revisions" badge in the UI.
+  const priorRevs = await db.approvalRequest.groupBy({
+    by: ["entityType", "entityId", "batchKey"],
+    where: { decision: "SUPERSEDED" },
+    _count: { _all: true },
+  });
+  const priorRevMap = new Map<string, number>();
+  for (const r of priorRevs) {
+    priorRevMap.set(`${r.entityType}::${r.batchKey ?? r.entityId}`, r._count._all);
   }
 
-  const targetItems: PendingTargetItem[] = [...targetGroups.entries()].map(([key, list]) => {
-    const first = list[0];
+  const planRequestByEntity = new Map<number, (typeof pendingRequests)[number]>();
+  const targetRequestByBatchKey = new Map<string, (typeof pendingRequests)[number]>();
+  const targetRequestByEntityId = new Map<number, (typeof pendingRequests)[number]>();
+  for (const r of pendingRequests) {
+    if (r.entityType === "PLAN") planRequestByEntity.set(r.entityId, r);
+    if (r.entityType === "TARGET") {
+      if (r.batchKey) targetRequestByBatchKey.set(r.batchKey, r);
+      else targetRequestByEntityId.set(r.entityId, r);
+    }
+  }
+
+  function buildChain(
+    req: (typeof pendingRequests)[number] | undefined,
+    fallbackSubmittedBy: string | null | undefined,
+    fallbackSubmittedAt: Date,
+    entityType: "PLAN" | "TARGET",
+    key: string | number,
+  ): ApprovalChain {
+    const priorKey = `${entityType}::${key}`;
     return {
+      approvalRequestId: req?.id ?? null,
+      submittedBy: req?.submittedBy ?? fallbackSubmittedBy ?? "unknown",
+      submittedByName: req?.submitter?.employeeName ?? null,
+      submittedAt: (req?.submittedAt ?? fallbackSubmittedAt).toISOString(),
+      submissionNote: req?.submissionNote ?? null,
+      batchKey: req?.batchKey ?? null,
+      priorRevisions: priorRevMap.get(priorKey) ?? 0,
+    };
+  }
+
+  const planItems: PendingPlanItem[] = plans.map((p) => {
+    const req = planRequestByEntity.get(p.id);
+    return {
+      id: p.id,
+      entityType: "PLAN",
+      entityId: p.id,
+      title: p.planName,
+      vertical: p.vertical,
+      submittedBy: req?.submittedBy ?? p.submittedBy ?? "unknown",
+      submittedAt: (req?.submittedAt ?? p.updatedAt).toISOString(),
+      summary:
+        p.formulaType === "PER_UNIT"
+          ? `Electronics-style plan — ${p.productIncentiveSlabs.length} product slabs, ${p.achievementMultipliers.length} achievement tiers`
+          : p.formulaType === "CAMPAIGN_SLAB"
+            ? `Grocery campaign plan — ${p.campaignConfigs.length} campaign(s)`
+            : `F&L weekly pool — ${p.fnlRoleSplits.length} role-split row(s)`,
+      chain: buildChain(req, p.submittedBy, p.updatedAt, "PLAN", p.id),
+      planDetail: planDetailFromDb(p),
+    };
+  });
+
+  // Group targets preferably by batchKey (Phase 2 path). Legacy targets that
+  // have no batchKey fall back to (vertical, periodType) grouping.
+  type TargetRow = (typeof targets)[number];
+  const byBatchKey = new Map<string, TargetRow[]>();
+  const byLegacyKey = new Map<string, TargetRow[]>();
+  for (const t of targets) {
+    if (t.batchKey) {
+      const list = byBatchKey.get(t.batchKey) ?? [];
+      list.push(t);
+      byBatchKey.set(t.batchKey, list);
+    } else {
+      const key = `${t.vertical}-${t.periodType}`;
+      const list = byLegacyKey.get(key) ?? [];
+      list.push(t);
+      byLegacyKey.set(key, list);
+    }
+  }
+
+  const targetItems: PendingTargetItem[] = [];
+  for (const [batchKey, list] of byBatchKey.entries()) {
+    const first = list[0];
+    const req = targetRequestByBatchKey.get(batchKey);
+    targetItems.push({
+      id: `target-${batchKey}`,
+      entityType: "TARGET",
+      entityId: first.id,
+      batchKey,
+      title: `Target batch — ${first.vertical} / ${first.periodType}`,
+      vertical: first.vertical,
+      submittedBy: req?.submittedBy ?? first.submittedBy ?? "unknown",
+      submittedAt: (req?.submittedAt ?? first.createdAt).toISOString(),
+      summary: `${list.length} store-level target row(s)`,
+      chain: buildChain(req, first.submittedBy, first.createdAt, "TARGET", batchKey),
+      targetDetail: targetRowsFromList(list),
+    });
+  }
+  for (const [key, list] of byLegacyKey.entries()) {
+    const first = list[0];
+    const req = targetRequestByEntityId.get(first.id);
+    targetItems.push({
       id: `target-${key}`,
       entityType: "TARGET",
       entityId: first.id,
-      title: `Target batch — ${first.vertical} / ${first.periodType}`,
+      batchKey: null,
+      title: `Target batch — ${first.vertical} / ${first.periodType} (legacy)`,
       vertical: first.vertical,
-      submittedBy: first.submittedBy ?? "admin",
-      submittedAt: first.createdAt.toISOString(),
+      submittedBy: req?.submittedBy ?? first.submittedBy ?? "unknown",
+      submittedAt: (req?.submittedAt ?? first.createdAt).toISOString(),
       summary: `${list.length} store-level target row(s)`,
+      chain: buildChain(req, first.submittedBy, first.createdAt, "TARGET", first.id),
       targetDetail: targetRowsFromList(list),
-    };
-  });
+    });
+  }
 
   return [...planItems, ...targetItems];
 }

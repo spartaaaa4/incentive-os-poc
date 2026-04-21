@@ -1,6 +1,7 @@
 import { endOfDay, startOfDay } from "date-fns";
 import { TransactionType, Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
+import { currentLedgerWhere } from "../calculations/currentLedger";
 
 type SalesFilters = {
   vertical?: Vertical;
@@ -185,7 +186,7 @@ export async function listSales(filters: SalesFilters) {
   if (hasGrocery && (!groceryRateCache || Date.now() >= groceryRateCacheExpiry)) {
     groceryRateCache = new Map();
     const groceryLedger = await db.incentiveLedger.findMany({
-      where: { vertical: Vertical.GROCERY },
+      where: { vertical: Vertical.GROCERY, ...currentLedgerWhere() },
       select: { storeCode: true, calculationDetails: true },
       distinct: ["storeCode"],
       orderBy: { calculatedAt: "desc" },
