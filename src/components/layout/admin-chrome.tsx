@@ -10,6 +10,7 @@ import {
   ClipboardList,
   Database,
   Gauge,
+  Network,
   Target,
   Zap,
   User,
@@ -57,6 +58,7 @@ const navItems: Array<NavItem> = [
   { href: "/admins", label: "Admins", icon: <Users size={14} />, requires: "canManageUsers" },
   { href: "/reference", label: "Org reference", icon: <Building2 size={14} /> },
   { href: "/data-model", label: "Data Model", icon: <Database size={14} /> },
+  { href: "/architecture", label: "Architecture", icon: <Network size={14} /> },
 ];
 
 export function AdminChrome({
