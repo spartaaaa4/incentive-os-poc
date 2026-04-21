@@ -597,6 +597,10 @@ model CalculationRun {
   @@index([planId, periodStart, periodEnd, status])
   @@index([planId, periodStart, isCurrent])
   @@index([status, startedAt])
+  /// Hot path: every ledger/rollup read filters on
+  /// `isCurrent=true AND status='SUCCEEDED'` (see currentLedgerWhere).
+  /// Without this, the dashboard joins sequential-scan calculation_run.
+  @@index([isCurrent, status])
   @@map("calculation_run")
 }
 

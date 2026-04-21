@@ -22,7 +22,7 @@ export async function GET(request: Request) {
   const monthEnd = endOfMonth(now);
   const withinThreshold = subDays(now, withinDays);
 
-  const [latest, currentMonthCount] = await Promise.all([
+  const [latest, currentMonthCount, attendanceRowsThisMonth] = await Promise.all([
     db.attendanceUpload.findFirst({
       orderBy: { uploadedAt: "desc" },
       select: { id: true, uploadedBy: true, fileName: true, rowCount: true, periodStart: true, periodEnd: true, uploadedAt: true, storeCodes: true },
@@ -36,13 +36,26 @@ export async function GET(request: Request) {
         ],
       },
     }),
+    // Truth test: are there actual attendance rows for the current month?
+    // The upload-batch metadata is secondary. Seed/backfill/direct-SQL paths
+    // write Attendance rows without creating an AttendanceUpload — without
+    // this check the banner lies ("not connected" while showing 5 PRESENT
+    // days in the same screen).
+    db.attendance.count({
+      where: { date: { gte: monthStart, lte: monthEnd } },
+    }),
   ]);
 
   const lastUploadWithinDays = latest ? latest.uploadedAt >= withinThreshold : false;
-  const isConnected = currentMonthCount > 0 && lastUploadWithinDays;
+  const hasAttendanceData = attendanceRowsThisMonth > 0;
+  // Connected = data exists. The upload channel is one way to land data;
+  // it's not the only way.
+  const isConnected = hasAttendanceData || (currentMonthCount > 0 && lastUploadWithinDays);
 
   return NextResponse.json({
     isConnected,
+    hasAttendanceData,
+    attendanceRowCount: attendanceRowsThisMonth,
     currentMonthCovered: currentMonthCount > 0,
     lastUploadWithinDays,
     latestUpload: latest

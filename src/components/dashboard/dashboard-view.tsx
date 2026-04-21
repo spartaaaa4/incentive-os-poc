@@ -224,6 +224,12 @@ export function DashboardView() {
 
   const drilldownRef = useRef<{ drillToStore: (storeCode: string, storeName: string) => void } | null>(null);
 
+  // Client cache for dashboard responses keyed by `${vertical}|${month}`. Each
+  // entry stores the current month's full payload + the prev-month stats tuple.
+  // Vertical tab-hopping should be free when we already have the data — no
+  // server round-trip, no spinner flash.
+  const cacheRef = useRef<Map<string, { data: DashboardResponse; prev: { totalSalesMtd: number; totalIncentiveMtd: number } | null }>>(new Map());
+
   const [attendance, setAttendance] = useState<{ isConnected: boolean; latestUploadAt: string | null } | null>(null);
   useEffect(() => {
     fetch("/api/attendance/status")
@@ -251,6 +257,17 @@ export function DashboardView() {
   }, [selected, month]);
 
   useEffect(() => {
+    const cacheKey = `${selected}|${month}`;
+    const cached = cacheRef.current.get(cacheKey);
+    if (cached) {
+      // Cache hit — paint immediately, no spinner, no fetch. Users tab-hopping
+      // between verticals they've already loaded get instant redraws.
+      setData(cached.data);
+      setPrevStats(cached.prev);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     const params = new URLSearchParams();
     if (selected !== "ALL") params.set("vertical", selected);
@@ -259,30 +276,40 @@ export function DashboardView() {
     const prevParams = new URLSearchParams(params);
     prevParams.set("month", prevKey);
 
+    let cancelled = false;
     const load = async () => {
       try {
         const [res, resPrev] = await Promise.all([
           fetch(`/api/dashboard?${params.toString()}`),
           fetch(`/api/dashboard?${prevParams.toString()}`),
         ]);
+        if (cancelled) return;
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = (await res.json()) as DashboardResponse;
-        setData(payload);
+        let prev: { totalSalesMtd: number; totalIncentiveMtd: number } | null = null;
         if (resPrev.ok) {
           const p = (await resPrev.json()) as DashboardResponse;
-          setPrevStats({ totalSalesMtd: p.stats.totalSalesMtd, totalIncentiveMtd: p.stats.totalIncentiveMtd });
-        } else {
-          setPrevStats(null);
+          prev = { totalSalesMtd: p.stats.totalSalesMtd, totalIncentiveMtd: p.stats.totalIncentiveMtd };
         }
+        if (cancelled) return;
+        cacheRef.current.set(cacheKey, { data: payload, prev });
+        setData(payload);
+        setPrevStats(prev);
       } catch (err) {
+        if (cancelled) return;
         console.error("Dashboard fetch failed:", err);
         setData(null);
         setPrevStats(null);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     void load();
+    return () => {
+      // If the user tabs away before the fetch resolves, discard the result so
+      // we don't overwrite newer state with stale data.
+      cancelled = true;
+    };
   }, [selected, month]);
 
   const unlockable = useMemo(() => {
