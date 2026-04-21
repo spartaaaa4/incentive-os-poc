@@ -2,6 +2,14 @@ import { startOfMonth, endOfMonth, format, subMonths } from "date-fns";
 import { Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
 
+/**
+ * Store-level leaderboard. Stores are ranked by target achievement percent
+ * (sum of active period sales ÷ sum of active period targets) within a single
+ * vertical and city.
+ *
+ * There is no user-level leaderboard — the product only ranks stores.
+ */
+
 function asNumber(value: unknown): number {
   if (typeof value === "number") return value;
   if (value && typeof value === "object" && "toNumber" in value) {
@@ -10,74 +18,54 @@ function asNumber(value: unknown): number {
   return Number(value ?? 0);
 }
 
-export type LeaderboardScope = "store" | "city";
-
-export type LeaderboardViewer = {
-  employeeId: string;
-  storeCode: string;
-  role: string;
-};
-
-export type LeaderboardPeriod = {
-  /** Calendar month key yyyy-MM */
-  month: string;
-  /** First calendar day (date-only) */
-  startDate: string;
-  /** Last calendar day (date-only) */
-  endDate: string;
-  /** Human label, e.g. "April 2026" */
-  label: string;
-  /** Short explanation for clients / UI */
-  description: string;
-};
-
-export type LeaderboardRow = {
+export type StoreLeaderboardRow = {
   rank: number;
-  employeeId: string;
-  employeeName: string;
-  role: string;
   storeCode: string;
   storeName: string;
   city: string;
-  /** Sum of `gross_amount` on sales lines in scope for the calendar month */
-  totalSales: number;
-  /** Number of sales transaction rows attributed to this employee in the period */
-  transactionCount: number;
-  isViewer: boolean;
+  target: number;
+  actual: number;
+  achievementPct: number;
+  isViewerStore: boolean;
 };
 
-export type LeaderboardResult = {
-  /** Always gross sales for the calendar month */
-  metric: "TOTAL_SALES_GROSS";
-  rankBy: "totalSales";
-  scope: LeaderboardScope;
+export type LeaderboardPeriod = {
+  month: string;
+  startDate: string;
+  endDate: string;
+  label: string;
+};
+
+export type StoreLeaderboardResult = {
+  metric: "STORE_TARGET_ACHIEVEMENT";
+  rankBy: "achievementPct";
+  scope: "stores";
   vertical: Vertical;
-  /** City leaderboard only includes stores (and people) in this vertical */
-  verticalFilter: "VIEWER_STORE_VERTICAL_ONLY";
   city: string;
-  storeCode: string | null;
-  storeName: string | null;
   period: LeaderboardPeriod;
   viewer: {
-    employeeId: string;
-    employeeName: string;
-    storeCode: string;
-    storeName: string;
+    storeCode: string | null;
+    storeName: string | null;
     city: string;
     vertical: Vertical;
-    role: string;
+  } | null;
+  leaderboard: StoreLeaderboardRow[];
+  myRank: {
+    rank: number;
+    storesAhead: number;
+    totalStores: number;
+    storeCode: string | null;
   };
-  leaderboard: LeaderboardRow[];
 };
 
-function competitionRanks(sortedTotals: number[]): number[] {
+function competitionRanks(sortedValues: number[]): number[] {
   const ranks: number[] = [];
   let i = 0;
-  while (i < sortedTotals.length) {
+  while (i < sortedValues.length) {
     const rank = i + 1;
-    const v = sortedTotals[i];
+    const v = sortedValues[i];
     let j = i;
-    while (j < sortedTotals.length && sortedTotals[j] === v) {
+    while (j < sortedValues.length && sortedValues[j] === v) {
       ranks.push(rank);
       j++;
     }
@@ -88,279 +76,155 @@ function competitionRanks(sortedTotals: number[]): number[] {
 
 function buildPeriod(anchor: Date): LeaderboardPeriod {
   const start = startOfMonth(anchor);
-  const end = endOfMonth(anchor);
-  const month = format(start, "yyyy-MM");
   return {
-    month,
+    month: format(start, "yyyy-MM"),
     startDate: format(start, "yyyy-MM-dd"),
-    endDate: format(end, "yyyy-MM-dd"),
+    endDate: format(endOfMonth(anchor), "yyyy-MM-dd"),
     label: format(start, "MMMM yyyy"),
-    description:
-      `Sales leaderboard for ${format(start, "MMMM yyyy")}. ` +
-      "Includes every sales line whose transaction date falls on or between the start and end dates (inclusive). " +
-      "Ranking uses sum of gross amount for the viewer's vertical only.",
   };
 }
 
-/** Resolve calendar month: explicit `month` wins; else `monthsBack` from today; else current month. */
-function resolveLeaderboardAnchor(input: {
-  month?: string | null;
-  monthsBack?: number | null;
-}): Date {
-  if (input.month && /^\d{4}-\d{2}$/.test(input.month)) {
-    return new Date(input.month + "-15");
-  }
-  const back = typeof input.monthsBack === "number" && input.monthsBack >= 0
-    ? input.monthsBack
-    : 0;
+function resolveAnchor(input: { month?: string | null; monthsBack?: number | null }): Date {
+  if (input.month && /^\d{4}-\d{2}$/.test(input.month)) return new Date(input.month + "-15");
+  const back = typeof input.monthsBack === "number" && input.monthsBack >= 0 ? input.monthsBack : 0;
   return subMonths(new Date(), back);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Admin leaderboard — no viewer needed, filter by vertical + city   */
-/* ------------------------------------------------------------------ */
-
-export type AdminLeaderboardResult = {
-  metric: "TOTAL_SALES_GROSS";
-  rankBy: "totalSales";
-  scope: "city" | "store";
-  vertical: Vertical;
-  city: string;
-  storeCode: string | null;
-  storeName: string | null;
-  period: LeaderboardPeriod;
-  leaderboard: Omit<LeaderboardRow, "isViewer">[];
+export type LeaderboardViewer = {
+  employeeId: string;
+  storeCode: string;
+  role: string;
 };
 
-export async function getAdminLeaderboard(input: {
-  vertical: string;
-  city: string;
-  storeCode?: string | null;
+/**
+ * Rank stores by achievement %. If `viewer` is provided, the viewer's own
+ * store is flagged in the response and `myRank` is populated.
+ *
+ * - `vertical` and `city` default to the viewer's store when not given.
+ * - Admin callers (no viewer) MUST pass both `vertical` and `city`.
+ */
+export async function getStoreLeaderboard(input: {
+  viewer?: LeaderboardViewer | null;
+  vertical?: string | null;
+  city?: string | null;
   month?: string | null;
   monthsBack?: number | null;
-}): Promise<AdminLeaderboardResult> {
-  const vertical = input.vertical as Vertical;
-  const anchor = resolveLeaderboardAnchor({
-    month: input.month ?? null,
-    monthsBack: input.monthsBack ?? null,
-  });
+}): Promise<StoreLeaderboardResult> {
+  let vertical = input.vertical as Vertical | undefined;
+  let city = input.city ?? null;
+  let viewerStoreCode: string | null = null;
+  let viewerStoreName: string | null = null;
+
+  if (input.viewer) {
+    const employee = await db.employeeMaster.findUnique({
+      where: { employeeId: input.viewer.employeeId },
+      include: { store: true },
+    });
+    if (!employee) throw new Error("Employee not found");
+    vertical = vertical ?? employee.store.vertical;
+    city = city ?? employee.store.city;
+    viewerStoreCode = employee.store.storeCode;
+    viewerStoreName = employee.store.storeName;
+  }
+
+  if (!vertical || !city) {
+    throw new Error("vertical and city are required when no viewer is supplied");
+  }
+
+  const anchor = resolveAnchor({ month: input.month ?? null, monthsBack: input.monthsBack ?? null });
   const period = buildPeriod(anchor);
   const periodStart = startOfMonth(anchor);
   const periodEnd = endOfMonth(anchor);
 
-  // Determine scope stores
-  let storeCodes: string[];
-  let scopeStoreCode: string | null = null;
-  let scopeStoreName: string | null = null;
-  const scope: "city" | "store" = input.storeCode ? "store" : "city";
-
-  if (input.storeCode) {
-    const store = await db.storeMaster.findUnique({
-      where: { storeCode: input.storeCode },
-    });
-    if (!store) throw new Error(`Store ${input.storeCode} not found`);
-    storeCodes = [input.storeCode];
-    scopeStoreCode = store.storeCode;
-    scopeStoreName = store.storeName;
-  } else {
-    const cityStores = await db.storeMaster.findMany({
-      where: { city: input.city, vertical },
-      select: { storeCode: true },
-    });
-    storeCodes = cityStores.map((s) => s.storeCode);
-    if (!storeCodes.length) throw new Error(`No ${vertical} stores found in ${input.city}`);
+  const stores = await db.storeMaster.findMany({
+    where: { city, vertical },
+    select: { storeCode: true, storeName: true, city: true },
+  });
+  const storeCodes = stores.map((s) => s.storeCode);
+  if (!storeCodes.length) {
+    return {
+      metric: "STORE_TARGET_ACHIEVEMENT",
+      rankBy: "achievementPct",
+      scope: "stores",
+      vertical,
+      city,
+      period,
+      viewer: input.viewer
+        ? { storeCode: viewerStoreCode, storeName: viewerStoreName, city, vertical }
+        : null,
+      leaderboard: [],
+      myRank: { rank: 0, storesAhead: 0, totalStores: 0, storeCode: viewerStoreCode },
+    };
   }
 
-  const salesAgg = await db.salesTransaction.groupBy({
-    by: ["employeeId"],
-    where: {
-      vertical,
-      storeCode: { in: storeCodes },
-      employeeId: { not: null },
-      transactionDate: { gte: periodStart, lte: periodEnd },
-    },
-    _sum: { grossAmount: true },
-    _count: { _all: true },
-  });
+  const [targets, sales] = await Promise.all([
+    db.target.findMany({
+      where: {
+        storeCode: { in: storeCodes },
+        vertical,
+        status: "ACTIVE",
+        periodStart: { lte: periodEnd },
+        periodEnd: { gte: periodStart },
+      },
+      select: { storeCode: true, targetValue: true },
+    }),
+    db.salesTransaction.groupBy({
+      by: ["storeCode"] as const,
+      _sum: { grossAmount: true },
+      where: {
+        storeCode: { in: storeCodes },
+        vertical,
+        transactionDate: { gte: periodStart, lte: periodEnd },
+        transactionType: "NORMAL",
+        channel: "OFFLINE",
+      },
+    }),
+  ]);
 
-  const salesByEmployee = new Map(
-    salesAgg
-      .filter((r) => r.employeeId != null)
-      .map((r) => [
-        r.employeeId as string,
-        {
-          totalSales: asNumber(r._sum.grossAmount),
-          transactionCount: r._count._all,
-        },
-      ]),
-  );
+  const targetByStore = new Map<string, number>();
+  for (const t of targets) targetByStore.set(t.storeCode, (targetByStore.get(t.storeCode) ?? 0) + asNumber(t.targetValue));
+  const salesByStore = new Map(sales.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
 
-  const employees = await db.employeeMaster.findMany({
-    where: {
-      storeCode: { in: storeCodes },
-      store: { vertical },
-    },
-    include: { store: true },
-  });
-
-  const rows: (Omit<LeaderboardRow, "rank" | "isViewer">)[] = employees.map((e) => {
-    const s = salesByEmployee.get(e.employeeId) ?? { totalSales: 0, transactionCount: 0 };
+  const raw = stores.map((s) => {
+    const target = targetByStore.get(s.storeCode) ?? 0;
+    const actual = salesByStore.get(s.storeCode) ?? 0;
+    const achievementPct = target > 0 ? (actual / target) * 100 : 0;
     return {
-      employeeId: e.employeeId,
-      employeeName: e.employeeName,
-      role: e.role,
-      storeCode: e.storeCode,
-      storeName: e.store.storeName,
-      city: e.store.city,
-      totalSales: Math.round(s.totalSales),
-      transactionCount: s.transactionCount,
+      storeCode: s.storeCode,
+      storeName: s.storeName,
+      city: s.city,
+      target: Math.round(target),
+      actual: Math.round(actual),
+      achievementPct: Math.round(achievementPct * 10) / 10,
     };
   });
 
-  rows.sort((a, b) => b.totalSales - a.totalSales);
-  const totals = rows.map((r) => r.totalSales);
-  const ranks = competitionRanks(totals);
+  raw.sort((a, b) => b.achievementPct - a.achievementPct);
+  const ranks = competitionRanks(raw.map((r) => r.achievementPct));
 
-  return {
-    metric: "TOTAL_SALES_GROSS",
-    rankBy: "totalSales",
-    scope,
-    vertical,
-    city: input.city,
-    storeCode: scopeStoreCode,
-    storeName: scopeStoreName,
-    period,
-    leaderboard: rows.map((r, i) => ({ ...r, rank: ranks[i] ?? i + 1 })),
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Employee-facing leaderboard (original)                            */
-/* ------------------------------------------------------------------ */
-
-export async function getLeaderboard(input: {
-  viewer: LeaderboardViewer;
-  scope: LeaderboardScope;
-  storeCode?: string | null;
-  month?: string | null;
-  monthsBack?: number | null;
-}): Promise<LeaderboardResult> {
-  const employee = await db.employeeMaster.findUnique({
-    where: { employeeId: input.viewer.employeeId },
-    include: { store: true },
-  });
-
-  if (!employee) {
-    throw new Error("Employee not found");
-  }
-
-  const vertical = employee.store.vertical;
-  const anchor = resolveLeaderboardAnchor({
-    month: input.month ?? null,
-    monthsBack: input.monthsBack ?? null,
-  });
-  const period = buildPeriod(anchor);
-  const periodStart = startOfMonth(anchor);
-  const periodEnd = endOfMonth(anchor);
-
-  let storeCodes: string[];
-  let scopeStoreCode: string | null = null;
-  let scopeStoreName: string | null = null;
-
-  if (input.scope === "store") {
-    const code = (input.storeCode?.trim() || input.viewer.storeCode).trim();
-    if (code !== employee.storeCode) {
-      throw new Error("You can only view the leaderboard for your own store");
-    }
-    storeCodes = [code];
-    scopeStoreCode = employee.store.storeCode;
-    scopeStoreName = employee.store.storeName;
-  } else {
-    const cityStores = await db.storeMaster.findMany({
-      where: { city: employee.store.city, vertical },
-      select: { storeCode: true },
-    });
-    storeCodes = cityStores.map((s) => s.storeCode);
-    if (!storeCodes.length) {
-      storeCodes = [employee.storeCode];
-    }
-  }
-
-  const salesAgg = await db.salesTransaction.groupBy({
-    by: ["employeeId"],
-    where: {
-      vertical,
-      storeCode: { in: storeCodes },
-      employeeId: { not: null },
-      transactionDate: { gte: periodStart, lte: periodEnd },
-    },
-    _sum: { grossAmount: true },
-    _count: { _all: true },
-  });
-
-  const salesByEmployee = new Map(
-    salesAgg
-      .filter((r) => r.employeeId != null)
-      .map((r) => [
-        r.employeeId as string,
-        {
-          totalSales: asNumber(r._sum.grossAmount),
-          transactionCount: r._count._all,
-        },
-      ]),
-  );
-
-  const employees = await db.employeeMaster.findMany({
-    where: {
-      storeCode: { in: storeCodes },
-      store: { vertical },
-    },
-    include: { store: true },
-  });
-
-  const rows: Omit<LeaderboardRow, "rank">[] = employees.map((e) => {
-    const s = salesByEmployee.get(e.employeeId) ?? { totalSales: 0, transactionCount: 0 };
-    return {
-      employeeId: e.employeeId,
-      employeeName: e.employeeName,
-      role: e.role,
-      storeCode: e.storeCode,
-      storeName: e.store.storeName,
-      city: e.store.city,
-      totalSales: Math.round(s.totalSales),
-      transactionCount: s.transactionCount,
-      isViewer: e.employeeId === input.viewer.employeeId,
-    };
-  });
-
-  rows.sort((a, b) => b.totalSales - a.totalSales);
-  const totals = rows.map((r) => r.totalSales);
-  const ranks = competitionRanks(totals);
-
-  const leaderboard: LeaderboardRow[] = rows.map((r, i) => ({
+  const leaderboard: StoreLeaderboardRow[] = raw.map((r, i) => ({
     ...r,
     rank: ranks[i] ?? i + 1,
+    isViewerStore: r.storeCode === viewerStoreCode,
   }));
 
+  const mine = leaderboard.find((r) => r.isViewerStore) ?? null;
+  const storesAhead = mine ? leaderboard.filter((r) => r.achievementPct > mine.achievementPct).length : 0;
+
   return {
-    metric: "TOTAL_SALES_GROSS",
-    rankBy: "totalSales",
-    scope: input.scope,
+    metric: "STORE_TARGET_ACHIEVEMENT",
+    rankBy: "achievementPct",
+    scope: "stores",
     vertical,
-    verticalFilter: "VIEWER_STORE_VERTICAL_ONLY",
-    city: employee.store.city,
-    storeCode: input.scope === "store" ? scopeStoreCode : null,
-    storeName: input.scope === "store" ? scopeStoreName : null,
+    city,
     period,
-    viewer: {
-      employeeId: employee.employeeId,
-      employeeName: employee.employeeName,
-      storeCode: employee.storeCode,
-      storeName: employee.store.storeName,
-      city: employee.store.city,
-      vertical,
-      role: employee.role,
-    },
+    viewer: input.viewer ? { storeCode: viewerStoreCode, storeName: viewerStoreName, city, vertical } : null,
     leaderboard,
+    myRank: {
+      rank: mine?.rank ?? 0,
+      storesAhead,
+      totalStores: leaderboard.length,
+      storeCode: viewerStoreCode,
+    },
   };
 }

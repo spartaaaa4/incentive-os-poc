@@ -1,5 +1,6 @@
 import { Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
+import { payoutDateFor, workingDaysInPeriod, runRateFor } from "./periodHelpers";
 
 function asNumber(value: unknown): number {
   if (typeof value === "number") return value;
@@ -521,16 +522,35 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
     };
   });
 
+  // Max potential incentive — base × top multiplier tier
+  const topMultiplierPct = multipliers.length > 0
+    ? Math.max(...multipliers.map((m: { multiplierPct: number }) => m.multiplierPct))
+    : 100;
+  const maxPotentialIncentive = Math.round(base * (topMultiplierPct / 100));
+
+  // Calendar/working-day math
+  const wd = workingDaysInPeriod(row.periodStart, row.periodEnd);
+  const runRate = runRateFor({
+    actual: departmentActual,
+    target: departmentTarget,
+    daysElapsed: wd.current,
+    daysTotal: wd.total,
+  });
+
   return {
     level: "employeeDetail" as const,
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
     vertical: "ELECTRONICS",
     period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
+    payoutDate: payoutDateFor("ELECTRONICS", row.periodEnd),
+    workingDays: { current: wd.current, total: wd.total, daysLeft: wd.daysLeft },
+    runRate,
     currentStanding: {
       employeeDepartment: empDept,
       departmentTarget: Math.round(departmentTarget), departmentActual: Math.round(departmentActual),
       achievementPct, currentMultiplierPct: currentMultiplier,
       baseIncentive: Math.round(base), finalIncentive: Math.round(final),
+      maxPotentialIncentive,
     },
     departments: deptBreakdown,
     multiplierTiers: multipliers,
@@ -611,16 +631,65 @@ async function buildGroceryDetail(employee: any, ledgerRows: any[], params: Para
     };
   });
 
+  // Per-employee pieces sold in this campaign window (eligible articles only)
+  let myPiecesSold = 0;
+  if (campaign && campaignArticles.length > 0) {
+    const agg = await db.salesTransaction.aggregate({
+      where: {
+        employeeId: employee.employeeId,
+        storeCode: employee.storeCode,
+        vertical: "GROCERY",
+        transactionDate: { gte: campaign.startDate, lte: campaign.endDate },
+        channel: "OFFLINE",
+        articleCode: { in: campaignArticles.map((a) => a.articleCode) },
+      },
+      _sum: { quantity: true },
+    });
+    myPiecesSold = agg._sum.quantity ?? 0;
+  }
+
+  // Prior-campaign payout (same plan, closest campaign by end date)
+  let lastCampaignPayoutPerEmp = 0;
+  if (campaign) {
+    const prevCampaign = await db.campaignConfig.findFirst({
+      where: { planId: campaign.planId, endDate: { lt: campaign.startDate }, status: "ACTIVE" },
+      orderBy: { endDate: "desc" },
+    });
+    if (prevCampaign) {
+      const prevLedger = await db.incentiveLedger.findFirst({
+        where: { campaignId: prevCampaign.id, employeeId: employee.employeeId },
+        select: { finalIncentive: true },
+      });
+      if (prevLedger) lastCampaignPayoutPerEmp = Math.round(asNumber(prevLedger.finalIncentive));
+    }
+  }
+
+  const periodEndForPayout = campaign?.endDate ?? params.periodEnd;
+  const wd = campaign ? workingDaysInPeriod(campaign.startDate, campaign.endDate) : workingDaysInPeriod(params.periodStart, params.periodEnd);
+
   return {
     level: "employeeDetail" as const,
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
     vertical: "GROCERY",
     period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
+    payoutDate: payoutDateFor("GROCERY", periodEndForPayout),
+    workingDays: { current: wd.current, total: wd.total, daysLeft: wd.daysLeft },
+    campaign: campaign
+      ? {
+          campaignId: campaign.id,
+          campaignName: campaign.campaignName,
+          startDate: campaign.startDate.toISOString().slice(0, 10),
+          endDate: campaign.endDate.toISOString().slice(0, 10),
+          channel: campaign.channel,
+        }
+      : null,
     currentStanding: {
       campaignName: campaign?.campaignName ?? "Campaign",
       campaignTarget: Math.round(targetValue), campaignActual: targetValue > 0 ? Math.round(targetValue * achievementPct / 100) : 0,
       achievementPct: Math.round(achievementPct * 10) / 10, totalPiecesSold: totalPieces, currentRate: rate,
+      myPiecesSold,
       totalStorePayout: Math.round(totalStorePayout), employeeCount, yourPayout: Math.round(yourPayout),
+      lastCampaignPayoutPerEmp,
     },
     payoutSlabs,
     recentSales,
@@ -667,11 +736,48 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
     targetValue: Math.round(asNumber((r.calculationDetails as Record<string, unknown>)?.targetValue ?? 0)),
   }));
 
+  // Roster + attendance aggregation for the latest week
+  const weekStart = latestRow.periodStart;
+  const weekEnd = latestRow.periodEnd;
+  const minWorkingDays = Number((planConfig.minWorkingDays as unknown) ?? 5);
+  const rosterAttendance = await db.attendance.findMany({
+    where: {
+      storeCode: employee.storeCode,
+      date: { gte: weekStart, lte: weekEnd },
+    },
+    select: { employeeId: true, status: true },
+  });
+  const presentByEmployee = new Map<string, number>();
+  for (const a of rosterAttendance) {
+    if (a.status === "PRESENT") {
+      presentByEmployee.set(a.employeeId, (presentByEmployee.get(a.employeeId) ?? 0) + 1);
+    }
+  }
+  const employees = storeEmployees
+    .map((e: { employeeId: string; employeeName: string; role: string }) => {
+      const presentDays = presentByEmployee.get(e.employeeId) ?? 0;
+      return {
+        employeeId: e.employeeId,
+        employeeName: e.employeeName,
+        role: e.role,
+        presentDays,
+        eligible: presentDays >= minWorkingDays,
+      };
+    })
+    .sort((a: { role: string }, b: { role: string }) => a.role.localeCompare(b.role));
+
+  const wd = workingDaysInPeriod(weekStart, weekEnd);
+  const payoutDate = payoutDateFor("FNL", weekEnd);
+
   return {
     level: "employeeDetail" as const,
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
     vertical: "FNL",
     period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
+    payoutDate,
+    workingDays: { current: wd.current, total: wd.total, daysLeft: wd.daysLeft },
+    staffing: { sms: smCount, dms: dmCount, eligibleSAs, minWorkingDays },
+    roster: employees,
     currentStanding: {
       weeklyTarget: Math.round(targetValue), weeklyActual: Math.round(actualSales),
       achievementPct: targetValue > 0 ? Math.round((actualSales / targetValue) * 1000) / 10 : 0,

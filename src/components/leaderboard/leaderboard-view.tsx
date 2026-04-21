@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { format, subMonths, startOfMonth } from "date-fns";
-import { Trophy, MapPin, Calendar, ChevronRight, Store, Filter } from "lucide-react";
+import { Trophy, MapPin, Calendar, ChevronRight, Filter } from "lucide-react";
 import {
   Alert,
   Breadcrumb,
@@ -18,7 +18,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { formatInr, formatNumber } from "@/lib/format";
+import { formatInr } from "@/lib/format";
 
 type StoreInfo = {
   storeCode: string;
@@ -35,31 +35,27 @@ type LeaderboardPeriod = {
   startDate: string;
   endDate: string;
   label: string;
-  description: string;
 };
 
-type AdminLeaderboardRow = {
+type StoreLeaderboardRow = {
   rank: number;
-  employeeId: string;
-  employeeName: string;
-  role: string;
   storeCode: string;
   storeName: string;
   city: string;
-  totalSales: number;
-  transactionCount: number;
+  target: number;
+  actual: number;
+  achievementPct: number;
+  isViewerStore: boolean;
 };
 
-type AdminLeaderboardResponse = {
-  metric: "TOTAL_SALES_GROSS";
-  rankBy: "totalSales";
-  scope: "store" | "city";
+type StoreLeaderboardResponse = {
+  metric: "STORE_TARGET_ACHIEVEMENT";
+  rankBy: "achievementPct";
+  scope: "stores";
   vertical: string;
   city: string;
-  storeCode: string | null;
-  storeName: string | null;
   period: LeaderboardPeriod;
-  leaderboard: AdminLeaderboardRow[];
+  leaderboard: StoreLeaderboardRow[];
 };
 
 const verticalLabels: Record<string, string> = {
@@ -83,81 +79,21 @@ function rollingMonthOptions(count: number): { value: string; label: string }[] 
 }
 
 function RankBadge({ rank }: { rank: number }) {
-  if (rank === 1) {
-    return (
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 28,
-          height: 28,
-          borderRadius: "50%",
-          background: "#fef3c7",
-          color: "#b45309",
-          fontWeight: 700,
-          fontSize: 14,
-        }}
-      >
-        🥇
-      </span>
-    );
-  }
-  if (rank === 2) {
-    return (
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 28,
-          height: 28,
-          borderRadius: "50%",
-          background: "#f1f5f9",
-          color: "#475569",
-          fontWeight: 700,
-          fontSize: 14,
-        }}
-      >
-        🥈
-      </span>
-    );
-  }
-  if (rank === 3) {
-    return (
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 28,
-          height: 28,
-          borderRadius: "50%",
-          background: "#ffedd5",
-          color: "#c2410c",
-          fontWeight: 700,
-          fontSize: 14,
-        }}
-      >
-        🥉
-      </span>
-    );
-  }
+  const common = {
+    display: "inline-flex" as const,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    fontWeight: 700,
+    fontSize: 14,
+  };
+  if (rank === 1) return <span style={{ ...common, background: "#fef3c7", color: "#b45309" }}>🥇</span>;
+  if (rank === 2) return <span style={{ ...common, background: "#f1f5f9", color: "#475569" }}>🥈</span>;
+  if (rank === 3) return <span style={{ ...common, background: "#ffedd5", color: "#c2410c" }}>🥉</span>;
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: 28,
-        height: 28,
-        borderRadius: "50%",
-        background: "#f8fafc",
-        color: "#64748b",
-        fontFamily: "monospace",
-        fontSize: 13,
-      }}
-    >
+    <span style={{ ...common, background: "#f8fafc", color: "#64748b", fontFamily: "monospace", fontSize: 13 }}>
       {rank}
     </span>
   );
@@ -171,10 +107,9 @@ export function LeaderboardView() {
 
   const [selectedVertical, setSelectedVertical] = useState<string>("");
   const [selectedCity, setSelectedCity] = useState<string>("");
-  const [selectedStore, setSelectedStore] = useState<string>("");
   const [month, setMonth] = useState(() => format(startOfMonth(new Date()), "yyyy-MM"));
 
-  const [data, setData] = useState<AdminLeaderboardResponse | null>(null);
+  const [data, setData] = useState<StoreLeaderboardResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -199,28 +134,15 @@ export function LeaderboardView() {
     return Array.from(set).sort();
   }, [stores, selectedVertical]);
 
-  const cityStores = useMemo(() => {
-    if (!selectedVertical || !selectedCity) return [];
-    return stores
-      .filter((s) => s.vertical === selectedVertical && s.city === selectedCity)
-      .sort((a, b) => a.storeName.localeCompare(b.storeName));
-  }, [stores, selectedVertical, selectedCity]);
-
   const handleVerticalChange = (v: string) => {
     setSelectedVertical(v);
     setSelectedCity("");
-    setSelectedStore("");
     setData(null);
   };
 
   const handleCityChange = (c: string) => {
     setSelectedCity(c);
-    setSelectedStore("");
     setData(null);
-  };
-
-  const handleStoreChange = (s: string) => {
-    setSelectedStore(s);
   };
 
   const loadLeaderboard = useCallback(async () => {
@@ -233,7 +155,6 @@ export function LeaderboardView() {
         city: selectedCity,
         month,
       });
-      if (selectedStore) params.set("storeCode", selectedStore);
       const res = await fetch(`/api/leaderboard?${params}`);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
@@ -244,13 +165,11 @@ export function LeaderboardView() {
     } finally {
       setLoading(false);
     }
-  }, [selectedVertical, selectedCity, selectedStore, month]);
+  }, [selectedVertical, selectedCity, month]);
 
   useEffect(() => {
-    if (selectedVertical && selectedCity) {
-      void loadLeaderboard();
-    }
-  }, [selectedVertical, selectedCity, selectedStore, month, loadLeaderboard]);
+    if (selectedVertical && selectedCity) void loadLeaderboard();
+  }, [selectedVertical, selectedCity, month, loadLeaderboard]);
 
   const setThisMonth = () => setMonth(format(startOfMonth(new Date()), "yyyy-MM"));
   const setLastMonth = () => setMonth(format(startOfMonth(subMonths(new Date(), 1)), "yyyy-MM"));
@@ -261,7 +180,7 @@ export function LeaderboardView() {
         title: (
           <Space size={6}>
             <Trophy size={14} style={{ color: "#d97706" }} />
-            <span>Leaderboard</span>
+            <span>Store leaderboard</span>
           </Space>
         ),
       },
@@ -275,81 +194,55 @@ export function LeaderboardView() {
         ),
       });
     }
-    if (selectedCity) {
-      items.push({ title: selectedCity });
-    }
-    if (selectedStore && data?.storeName) {
-      items.push({ title: data.storeName });
-    }
+    if (selectedCity) items.push({ title: selectedCity });
     return items;
-  }, [selectedVertical, selectedCity, selectedStore, data?.storeName]);
+  }, [selectedVertical, selectedCity]);
 
-  const tableColumns: ColumnsType<AdminLeaderboardRow> = useMemo(() => {
-    const cols: ColumnsType<AdminLeaderboardRow> = [
-      {
-        title: "Rank",
-        dataIndex: "rank",
-        width: 80,
-        render: (rank: number) => <RankBadge rank={rank} />,
-      },
-      {
-        title: "Employee",
-        key: "employee",
-        render: (_, row) => (
-          <Space direction="vertical" size={0}>
-            <Typography.Text strong>{row.employeeName}</Typography.Text>
-            <Typography.Text type="secondary" code style={{ fontSize: 12 }}>
-              {row.employeeId}
-            </Typography.Text>
-          </Space>
-        ),
-      },
-      { title: "Role", dataIndex: "role" },
-    ];
-    if (data?.scope === "city") {
-      cols.push({
-        title: "Store",
-        key: "store",
-        render: (_, row) => (
-          <Space direction="vertical" size={0}>
-            <Typography.Text style={{ fontSize: 12 }}>{row.storeName}</Typography.Text>
-            <Typography.Text type="secondary" code style={{ fontSize: 11 }}>
-              {row.storeCode}
-            </Typography.Text>
-          </Space>
-        ),
-      });
-    }
-    cols.push(
-      {
-        title: "Transactions",
-        dataIndex: "transactionCount",
-        align: "right",
-        width: 120,
-        render: (v: number) => formatNumber(v),
-      },
-      {
-        title: "Total sales (gross)",
-        dataIndex: "totalSales",
-        align: "right",
-        width: 168,
-        render: (v: number) => <Typography.Text strong>{formatInr(v)}</Typography.Text>,
-      },
-    );
-    return cols;
-  }, [data?.scope]);
-
-  const totals = useMemo(() => {
-    if (!data?.leaderboard.length) return { sales: 0, tx: 0 };
-    return data.leaderboard.reduce(
-      (acc, r) => {
-        acc.sales += r.totalSales;
-        acc.tx += r.transactionCount;
-        return acc;
-      },
-      { sales: 0, tx: 0 },
-    );
-  }, [data]);
+  const tableColumns: ColumnsType<StoreLeaderboardRow> = useMemo(() => [
+    {
+      title: "Rank",
+      dataIndex: "rank",
+      width: 80,
+      render: (rank: number) => <RankBadge rank={rank} />,
+    },
+    {
+      title: "Store",
+      key: "store",
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{row.storeName}</Typography.Text>
+          <Typography.Text type="secondary" code style={{ fontSize: 12 }}>
+            {row.storeCode}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "Target",
+      dataIndex: "target",
+      align: "right",
+      width: 140,
+      render: (v: number) => formatInr(v),
+    },
+    {
+      title: "Actual",
+      dataIndex: "actual",
+      align: "right",
+      width: 140,
+      render: (v: number) => formatInr(v),
+    },
+    {
+      title: "Achievement",
+      dataIndex: "achievementPct",
+      align: "right",
+      width: 140,
+      render: (v: number) => (
+        <Typography.Text strong style={{ color: v >= 100 ? "#15803d" : v >= 85 ? "#b45309" : "#b91c1c" }}>
+          {v.toFixed(1)}%
+        </Typography.Text>
+      ),
+    },
+  ], []);
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -368,18 +261,15 @@ export function LeaderboardView() {
                 Vertical
               </Typography.Text>
               <Space wrap>
-                {verticals.map((v) => {
-                  const active = selectedVertical === v;
-                  return (
-                    <Button
-                      key={v}
-                      type={active ? "primary" : "default"}
-                      onClick={() => handleVerticalChange(v)}
-                    >
-                      {verticalLabels[v]}
-                    </Button>
-                  );
-                })}
+                {verticals.map((v) => (
+                  <Button
+                    key={v}
+                    type={selectedVertical === v ? "primary" : "default"}
+                    onClick={() => handleVerticalChange(v)}
+                  >
+                    {verticalLabels[v]}
+                  </Button>
+                ))}
               </Space>
             </Space>
 
@@ -400,26 +290,6 @@ export function LeaderboardView() {
               </Space>
             ) : null}
 
-            {selectedCity && cityStores.length > 0 ? (
-              <Space direction="vertical" size={6}>
-                <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 500 }}>
-                  <Store size={12} style={{ marginRight: 4, verticalAlign: "middle" }} />
-                  Store <Typography.Text type="secondary">(optional)</Typography.Text>
-                </Typography.Text>
-                <Select
-                  style={{ minWidth: 240 }}
-                  placeholder={`All stores in ${selectedCity}`}
-                  value={selectedStore || undefined}
-                  onChange={(v) => handleStoreChange(v ?? "")}
-                  allowClear
-                  options={cityStores.map((s) => ({
-                    value: s.storeCode,
-                    label: `${s.storeName} (${s.storeCode})`,
-                  }))}
-                />
-              </Space>
-            ) : null}
-
             {selectedCity ? (
               <Space direction="vertical" size={6}>
                 <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 500 }}>
@@ -427,12 +297,8 @@ export function LeaderboardView() {
                   Period
                 </Typography.Text>
                 <Space wrap>
-                  <Button size="small" onClick={setThisMonth}>
-                    This month
-                  </Button>
-                  <Button size="small" onClick={setLastMonth}>
-                    Last month
-                  </Button>
+                  <Button size="small" onClick={setThisMonth}>This month</Button>
+                  <Button size="small" onClick={setLastMonth}>Last month</Button>
                   <Select
                     style={{ minWidth: 160 }}
                     value={month}
@@ -454,7 +320,7 @@ export function LeaderboardView() {
               <Space direction="vertical" size={4}>
                 <Typography.Text type="secondary">Select a vertical to get started</Typography.Text>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Then pick a city to see the sales leaderboard
+                  Stores are ranked by target achievement % within a city.
                 </Typography.Text>
               </Space>
             }
@@ -488,40 +354,22 @@ export function LeaderboardView() {
                 <Space direction="vertical" size="small" style={{ width: "100%" }}>
                   <Space wrap align="center">
                     <Trophy size={16} style={{ color: "#d97706" }} />
-                    <Typography.Text strong>
-                      {data.scope === "store"
-                        ? `Store leaderboard — ${data.storeName} (${data.storeCode})`
-                        : `City leaderboard — ${data.city}`}
-                    </Typography.Text>
+                    <Typography.Text strong>Store leaderboard — {data.city}</Typography.Text>
                     <Typography.Text type="secondary">·</Typography.Text>
                     <Tag color={verticalTagColor[data.vertical]} style={{ margin: 0 }}>
                       {verticalLabels[data.vertical] ?? data.vertical}
                     </Tag>
                     <Typography.Text type="secondary">·</Typography.Text>
                     <Typography.Text strong>{data.period.label}</Typography.Text>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      ({data.period.startDate} → {data.period.endDate})
-                    </Typography.Text>
                   </Space>
                   <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-                    {data.period.description}
+                    Stores ranked by target achievement % (offline gross sales ÷ active target) for the period.
                   </Typography.Paragraph>
-                  <Space wrap size="large" style={{ fontSize: 12 }}>
-                    <Typography.Text>
-                      <Typography.Text strong>{data.leaderboard.length}</Typography.Text> employees
-                    </Typography.Text>
-                    <Typography.Text>
-                      <Typography.Text strong>{formatInr(totals.sales)}</Typography.Text> total sales
-                    </Typography.Text>
-                    <Typography.Text>
-                      <Typography.Text strong>{formatNumber(totals.tx)}</Typography.Text> transactions
-                    </Typography.Text>
-                  </Space>
                 </Space>
               </Card>
 
-              <Table<AdminLeaderboardRow>
-                rowKey="employeeId"
+              <Table<StoreLeaderboardRow>
+                rowKey="storeCode"
                 size="small"
                 scroll={{ x: "max-content" }}
                 columns={tableColumns}
@@ -529,7 +377,7 @@ export function LeaderboardView() {
                 pagination={false}
                 locale={{
                   emptyText: (
-                    <Typography.Text type="secondary">No sales data for this period</Typography.Text>
+                    <Typography.Text type="secondary">No stores found for this selection</Typography.Text>
                   ),
                 }}
               />
@@ -539,8 +387,6 @@ export function LeaderboardView() {
                 <Typography.Text code>
                   GET /api/leaderboard?vertical=ELECTRONICS&amp;city=Bijapur&amp;month=yyyy-MM
                 </Typography.Text>
-                {" "}
-                Add <Typography.Text code>storeCode=3675</Typography.Text> to drill into a specific store.
               </Typography.Paragraph>
             </>
           ) : null}
