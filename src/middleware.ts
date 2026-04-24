@@ -14,7 +14,9 @@ const PUBLIC_ROUTES = [
   "/api/auth/me",
   "/api/health",
   "/api/dashboard",
-  "/api/incentives",
+  // `/api/incentives` intentionally NOT public — it takes `employeeId` as a
+  // query param and returns that employee's payout. Handler enforces
+  // self-access OR admin `canViewAll` scoped to the target's vertical.
   "/api/sales",
   "/api/approvals",
   "/api/targets",

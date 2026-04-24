@@ -102,14 +102,16 @@ refer to the state at review time — verify before touching.
    at the top of `runCalculation`, or add `scopeStoreCodes && scope`
    array-overlap to the WHERE.
 
-2. **Worker crash → jobs stuck RUNNING forever** — `run-jobs/route.ts:149-173`.
-   No reaper, no visibility timeout. `attempts` column exists but nothing
-   enforces a cap. Fix: `WHERE status='PENDING' OR (status='RUNNING' AND
-   claimed_at < NOW() - INTERVAL '10m' AND attempts < 5)`.
+2. ~~**Worker crash → jobs stuck RUNNING forever**~~ — **FIXED.**
+   `run-jobs/route.ts` now reclaims RUNNING jobs older than 10 min and caps
+   retries at `MAX_ATTEMPTS=5`. See the "claim oldest PENDING or stuck
+   RUNNING" query in `claimNextJob()`.
 
-3. **No DLQ / max-attempts** — `run-jobs/route.ts:98-117`. Any transient
-   DB blip flips the job to FAILED permanently. Transient-vs-terminal
-   distinction missing; retry with backoff below N attempts, DLQ past N.
+3. ~~**No DLQ / max-attempts**~~ — **FIXED** alongside #2. Transient
+   failures re-queue to PENDING (cron cadence = de-facto backoff) instead of
+   flipping FAILED on first blip. Terminal failures past the attempt cap
+   stay FAILED — that's the DLQ marker (Phase 6 ops UI will filter
+   `status=FAILED AND attempts>=5` and expose requeue).
 
 4. **`PlanApplicability` is dead code** — schema at `schema.prisma:424-436`,
    referenced in `/architecture` and `/data-model` pages, **not read
@@ -117,11 +119,12 @@ refer to the state at review time — verify before touching.
    (engine matches each employee against their applicable plans, emits
    one ledger row per plan) or rip the schema + reference-page claim.
 
-5. **`GET /api/incentives` has no auth** — `incentives/route.ts:6`,
-   middleware (`src/middleware.ts`) lists `/api/incentives` in
-   `PUBLIC_ROUTES`. Takes `employeeId` as a query param and returns
-   that employee's payout. Employee A can see employee B's payout by
-   changing the URL. Emergency patch, not a future phase.
+5. ~~**`GET /api/incentives` has no auth**~~ — **FIXED.** Removed from
+   `middleware.PUBLIC_ROUTES`; handler now authenticates and enforces:
+   self-read; SM/DM/BA/CENTRAL roles for management reads (coarse — Phase 5
+   tightens to store-scope); admin console with `canViewAll` scoped to
+   target vertical; otherwise 403. Cross-vertical reads with no single
+   vertical scope require super-admin.
 
 ### Scale concerns (works today, won't at Reliance's firehose)
 
