@@ -32,6 +32,16 @@ export type ReasonCode =
   | "STORE_UNQUALIFIED"      // F&L: store didn't beat the weekly target (BLOCKING)
   // Attendance-driven (F&L SA only)
   | "INSUFFICIENT_ATTENDANCE"
+  // Phase 5.1 — F&L pilot scope (Reliance Trends Incentive Policy v1):
+  // Two new store-level gates plus a leave-aware attendance reason. PI
+  // (pilferage index) on hold blocks the entire store-week; GM not achieved
+  // blocks SM/DM only and is INFO for CSA. LEAVE_IN_WEEK fires when the
+  // employee took ANY leave during the 7-day incentive week — the policy
+  // is explicit that approved leave still disqualifies.
+  | "STORE_PI_HOLD"               // F&L: PI ≥ 0.30% — store on hold (BLOCKING)
+  | "STORE_GM_NOT_ACHIEVED"       // F&L: gross margin not met (BLOCKING for SM/DM, WARNING for CSA)
+  | "LEAVE_IN_WEEK"               // F&L: any leave during incentive week (BLOCKING)
+  | "ROLE_NOT_ELIGIBLE_FOR_INCENTIVE" // F&L: role outside the policy's named set (BLOCKING)
   // Catch-all
   | "NO_PLAN_APPLICABLE";
 
@@ -67,6 +77,14 @@ const BLOCKING_CODES = new Set<ReasonCode>([
   "STORE_UNQUALIFIED",
   "INSUFFICIENT_ATTENDANCE",
   "NO_PLAN_APPLICABLE",
+  // Phase 5.1 — F&L pilot. STORE_PI_HOLD and LEAVE_IN_WEEK are unconditional
+  // BLOCKING. STORE_GM_NOT_ACHIEVED is role-conditional: BLOCKING for SM/DM
+  // (the engine emits it only for those roles); CSA never sees it as a
+  // reason — for CSA the store can fail GM and they still earn.
+  "STORE_PI_HOLD",
+  "STORE_GM_NOT_ACHIEVED",
+  "LEAVE_IN_WEEK",
+  "ROLE_NOT_ELIGIBLE_FOR_INCENTIVE",
 ]);
 
 export function severityFor(code: ReasonCode): ReasonSeverity {
@@ -116,7 +134,14 @@ export function buildEligibility(
     blockingCodes.has("EXITED_MID_PERIOD") ||
     blockingCodes.has("DEPT_NO_SLABS") ||
     blockingCodes.has("STORE_NOT_IN_CAMPAIGN") ||
-    blockingCodes.has("NO_PLAN_APPLICABLE");
+    blockingCodes.has("NO_PLAN_APPLICABLE") ||
+    // Phase 5.1: PI HOLD / GM-fail / approved-leave-during-week are not
+    // recoverable inside the same week. Suppress the "reach 100% to unlock"
+    // nudge — it'd just be misleading.
+    blockingCodes.has("STORE_PI_HOLD") ||
+    blockingCodes.has("STORE_GM_NOT_ACHIEVED") ||
+    blockingCodes.has("LEAVE_IN_WEEK") ||
+    blockingCodes.has("ROLE_NOT_ELIGIBLE_FOR_INCENTIVE");
 
   return {
     status,

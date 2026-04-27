@@ -24,11 +24,27 @@ enum StoreStatus {
   TEMPORARILY_CLOSED
 }
 
+/// Employee role enum.
+///
+/// Phase 5.1 (F&L pilot — Reliance Trends): added `OMNI` and `PT` to mirror
+/// what we found in the Mar'26 Week-1 working file (297 Omni + 124 PT rows
+/// across 30K employees in 2,138 stores). RIL's `Incentive Policy v1` only
+/// names SM/DM/CSA — so until format team confirms eligibility for these
+/// roles on the Tue 28 Apr call, the engine routes both `OMNI` and `PT`
+/// through the CSA pool (see `roleForPool()` in
+/// `src/server/calculations/engines.ts`). Adding them to the enum now
+/// avoids a migration once the answer lands.
+///
+/// CSA (the Reliance term) maps to our `SA` value — this codebase pre-dates
+/// the F&L scope and uses `SA` as the customer-facing-staff label. Ingest
+/// helpers normalise either string to `SA`.
 enum EmployeeRole {
   SM
   DM
   SA
   BA
+  OMNI
+  PT
 }
 
 enum PayrollStatus {
@@ -608,6 +624,66 @@ model CalculationRun {
 /// inside each successful run. Primary use: dashboard daily trendlines and
 /// ingestion reconciliation vs raw totals. Not a replacement for raw
 /// transaction drilldown — use `sales_transaction` for txn-level UI.
+/// Phase 5.1 (F&L pilot — Reliance Trends Incentive Policy v1) —
+/// per-store × period external metrics that aren't derivable from sales
+/// transactions. Two feeds today, both store-level and weekly-cadence:
+///
+///  - **PI (Pilferage Index)** — store-level shrinkage metric. The Trends
+///    policy holds the entire store's incentive when PI ≥ 0.30%. Source
+///    system TBD (asked RIL on the 28-Apr call). Stored as a percentage
+///    figure (0.30 means 0.30%); `piHoldFlag` is computed at ingest time
+///    so the engine doesn't re-derive the threshold per row.
+///
+///  - **GM (Gross Margin)** — per-store weekly GM% target and actual.
+///    The policy says SM/DM only earn when sales target AND GM target are
+///    both achieved. CSA is unaffected. `gmAchieved` is the canonical
+///    truth value; the engine doesn't re-compare gmActual ≥ gmTarget so
+///    that operations can manually override (e.g. "GM short by 0.1%, but
+///    approved by ops") without changing the raw values.
+///
+/// Why a separate table (not folded into StorePeriodRollup): rollups are
+/// engine output, this is engine input. Keeping inputs and outputs in
+/// separate tables means a recompute can be re-driven without losing the
+/// PI/GM data, and the ingest path doesn't have to know about CalculationRun.
+///
+/// Reversibility note: `(storeCode, periodStart, periodEnd)` is the natural
+/// key. We use `periodStart` as the unique-by axis because F&L weeks are
+/// fixed Sun–Sat — `periodEnd` is derivable but stored for query convenience.
+model StoreWeeklyMetric {
+  id             Int      @id @default(autoincrement())
+  storeCode      String   @map("store_code") @db.VarChar(32)
+  vertical       Vertical
+  periodStart    DateTime @map("period_start") @db.Date
+  periodEnd      DateTime @map("period_end") @db.Date
+  /// Pilferage index as a percentage (0.30 = 0.30%). Optional — older
+  /// imports may not have it; treated as "not on hold" when missing.
+  pilferageIndex Decimal? @map("pilferage_index") @db.Decimal(8, 4)
+  /// Pre-computed at ingest time using the active threshold (0.30% as of
+  /// Apr 2026). Engine reads this directly so the threshold can shift
+  /// without changing the engine.
+  piHoldFlag     Boolean  @default(false) @map("pi_hold_flag")
+  /// GM% target for the week (decimal fraction, e.g. 0.42 = 42%).
+  gmTarget       Decimal? @map("gm_target") @db.Decimal(8, 4)
+  /// GM% actual for the week (decimal fraction).
+  gmActual       Decimal? @map("gm_actual") @db.Decimal(8, 4)
+  /// Canonical GM-achieved truth value. Defaults to `gmActual >= gmTarget`
+  /// at ingest time, but ops can override (write directly via admin path).
+  /// Engine reads this — never re-compares the raw values.
+  gmAchieved     Boolean  @default(false) @map("gm_achieved")
+  /// Free-form note attached at ingest. Surface in admin drilldown so
+  /// operators can see "Override: ops approved manual exception" or
+  /// similar — the why behind a `gmAchieved=true` despite gmActual<gmTarget.
+  note           String?  @db.Text
+  source         String   @default("API") @db.VarChar(32)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([storeCode, vertical, periodStart])
+  @@index([vertical, periodStart])
+  @@index([piHoldFlag, periodStart])
+  @@map("store_weekly_metric")
+}
+
 model StoreDailyRollup {
   id               Int             @id @default(autoincrement())
   storeCode        String          @map("store_code") @db.VarChar(32)

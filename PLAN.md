@@ -244,6 +244,113 @@ rather than view-global.
   response cache in `DashboardView`, `/api/attendance/status` now checks
   raw `Attendance` rows (not just `AttendanceUpload` batches).
 
+### Phase 5.1 — F&L pilot scope (Reliance Trends Incentive Policy v1, eff. 1 Mar 2026)
+
+Vendor handed over the actual W1 working file (`Week 1 Incentive working
+March'26.xlsx`) and the formal policy doc. The pilot scope expanded from
+"the working F&L engine we already had" to a stricter policy with two new
+store-level gates (PI HOLD, GM achievement), leave-aware attendance, and
+two new role tags (OMNI, PT). Five-phase slice landed in one go; the
+seeding-data pass to wire up actual W1 data is a separate task.
+
+**Schema (5.1)**
+
+- `EmployeeRole` enum extended with `OMNI` and `PT`. Both route through
+  the CSA pool for the pilot; flag `FNL_CSA_POOL_ROLES` in
+  `engines.ts:706-715` if that decision flips.
+- New `StoreWeeklyMetric` table — one row per `(storeCode, vertical,
+  periodStart)`. Columns: `pilferageIndex` (decimal), `piHoldFlag` (bool,
+  computed at ingest), `gmTarget`/`gmActual`/`gmAchieved` (gm bool also
+  computed at ingest), `note` (free text for ops overrides), `source`.
+  Indexes: unique `(storeCode, vertical, periodStart)`,
+  `(vertical, periodStart)`, `(piHoldFlag, periodStart)`. Migration:
+  `prisma/migrations/20260428000000_phase_5_1_fnl_pilot_scope/`.
+- Four new ReasonCodes in `eligibility.ts`: `STORE_PI_HOLD` (BLOCKING),
+  `STORE_GM_NOT_ACHIEVED` (BLOCKING for SM/DM only — engine emits it
+  conditionally; CSA never sees it), `LEAVE_IN_WEEK` (BLOCKING),
+  `ROLE_NOT_ELIGIBLE_FOR_INCENTIVE` (BLOCKING). All four added to
+  `nudgeNeverHelps` so the "reach 100% to unlock" nudge is suppressed
+  when one of them blocks.
+
+**Engine (5.2) — `engines.ts:707+` `computeFnL`**
+
+- Single batched read of `StoreWeeklyMetric` per week; no N+1.
+- Two env-driven gate modes: `FNL_PI_HOLD_MODE` and `FNL_GM_GATE_MODE`,
+  each `enforce` (default) or `advisory`. Advisory still emits the
+  reason in `calculationDetails.reasons[]` — payout isn't blocked, but
+  the trail records "would have blocked under enforce mode" so we can
+  show ops the impact before flipping.
+- PI HOLD: voids the entire store-week (`hasExceeded` becomes false) when
+  `piHoldFlag && enforce`. CSAs and managers alike get zero.
+- GM gate: voids SM/DM payout only (CSAs unaffected per policy).
+  `smPayout` / `dmPayout` are zeroed when `!gmAchieved && enforce`.
+- Single MOD branch: when `(smCount === 1, dmCount === 0)` and the
+  annexure has no matching row, override to `(saPoolPct=70, smSharePct=30)`
+  per policy text. Tracked as `splitMode = 'SINGLE_MOD_70_30'` in
+  `calculationDetails`.
+- Leave-aware attendance: pulls the full attendance rows (not just
+  PRESENT counts) for the entire CSA pool (SA + OMNI + PT). Any
+  non-PRESENT day → `LEAVE_IN_WEEK` reason → not eligible. Data-gap
+  fallback: no recorded leave but < `minWorkingDays` PRESENT days →
+  `INSUFFICIENT_ATTENDANCE`.
+- `calculationDetails` now carries: `pilferageIndex`, `piHoldFlag`,
+  `piHoldEnforced`, `gmTarget`, `gmActual`, `gmAchieved`,
+  `gmGateEnforced`, `splitMode`, `smCount`, `dmCount`,
+  `leaveStatusThisWeek`. Admin drilldown reads these directly.
+
+**Ingest (5.3)**
+
+- New `POST /api/ingest/store-metrics` (`src/app/api/ingest/store-metrics/route.ts`).
+  Same shape as `sales` — Idempotency-Key required, async-style 202 +
+  enqueue recompute. Threshold (`PI_HOLD_THRESHOLD_PCT = 0.30`) computed
+  at ingest with explicit override fields (`piHoldFlagOverride`,
+  `gmAchievedOverride`) for ops exceptions. Upserts on
+  `(storeCode, vertical, periodStart)` so re-ingest of a corrected
+  reading replaces cleanly.
+- Sales endpoint already accepts per-row `storeFormat` so format-aware
+  plan resolution (TRENDS / TST / TRENDS_EXT once seeded) needs no
+  endpoint change.
+- Employee ingest endpoint deferred to seeding-data pass (admin upload
+  + seed already cover EmployeeMaster for the pilot).
+
+**Admin console (5.4) — `incentives.ts`**
+
+- `getAllStoresSummary` now joins `StoreWeeklyMetric` for the period and
+  emits per-row: `piHoldAnyWeek`, `gmMissedWeeks`, `weeksWithMetric`,
+  `latestPilferageIndex`. Null = no metric ingested yet (treat as
+  "missing data", not "passing").
+- `getStoreSummary` mirrors the same enrichment for the city-level list.
+- `getStoreDetail` `weekPayouts[]` — per-week PI/GM (`pilferageIndex`,
+  `piHoldFlag`, `gmTarget`, `gmActual`, `gmAchieved`) merged in. Lets
+  the admin drilldown render "this store qualified on sales but missed
+  GM" without a second round-trip.
+
+**Mobile (5.5) — `incentive-app/src/api/transformers/fnl.js`**
+
+- Streak: weeks where `piHoldFlag === true` are filtered out before the
+  computeStreak call. The new gates already zero payout via the engine,
+  so the existing payout-based streak naturally accounts for GM/leave
+  failures — PI HOLD filter is defense-in-depth.
+- Top-level + per-week PI/GM forwarded into the transformer payload
+  (`pilferageIndex`, `piHoldFlag`, `gmTarget`, `gmActual`, `gmAchieved`).
+  `EligibilityNotice` is dumb — server messages flow through, so
+  `STORE_PI_HOLD` / `STORE_GM_NOT_ACHIEVED` / `LEAVE_IN_WEEK` /
+  `ROLE_NOT_ELIGIBLE_FOR_INCENTIVE` already render with the messages
+  composed in `engines.ts`. No copy-table change needed.
+- UI follow-ups (PI HOLD hero card, GM-missed chip on manager hero) are
+  data-ready; visual components are a downstream sprint.
+
+**What's NOT in this slice (separate task)**
+
+- Seeding/data: ingesting the W1 working file rows, creating 3 plans
+  (TRENDS / TST / TRENDS_EXT), backfilling `StoreWeeklyMetric` from the
+  PI Norms + GM Achieved columns, reconciling our compute against
+  Reliance's per-row `Incentive Amount` ground truth.
+- Reconciliation report tab in admin (compute vs RIL) — needs the
+  seeding pass first.
+- Format filter on admin store list — JSON contract is ready
+  (`storeFormat` already on rows); UI control is a small next step.
+
 ### Git identity
 
 - Both repos have local `user.name=spartaaaa4`, `user.email=wealth.anuj4@gmail.com`

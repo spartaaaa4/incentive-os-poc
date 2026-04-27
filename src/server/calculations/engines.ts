@@ -704,12 +704,35 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
 
 // ──────────── F&L ────────────
 
+/**
+ * F&L pilot — CSA pool roles. SA is the legacy tag; OMNI and PT showed up in
+ * the W1 working file (Reliance Trends Incentive Policy v1, eff. 1 Mar 2026)
+ * and per the Tuesday call default, both are routed through the CSA pool for
+ * the pilot. If the call goes the other way we'll narrow this back to [SA].
+ */
+const FNL_CSA_POOL_ROLES: EmployeeRole[] = [
+  EmployeeRole.SA,
+  EmployeeRole.OMNI,
+  EmployeeRole.PT,
+];
+const isCsaPoolRole = (role: EmployeeRole) => FNL_CSA_POOL_ROLES.includes(role);
+
 async function computeFnL(input: RecalculateInput): Promise<void> {
   const plan = await db.incentivePlan.findFirst({
     where: { vertical: Vertical.FNL, status: "ACTIVE" },
     include: { fnlRoleSplits: true },
   });
   if (!plan) return;
+
+  // Phase 5.1 — pilot gate flags. Default to "enforce" (policy text); ops
+  // can flip to "advisory" via env if Reliance asks us to soft-launch a gate.
+  // Advisory mode still emits the reason in calculationDetails (so the trail
+  // is visible) but doesn't block payout — the engine treats the metric as
+  // passing for the math.
+  const piHoldMode = (process.env.FNL_PI_HOLD_MODE ?? "enforce").toLowerCase();
+  const gmGateMode = (process.env.FNL_GM_GATE_MODE ?? "enforce").toLowerCase();
+  const piHoldEnforced = piHoldMode === "enforce";
+  const gmGateEnforced = gmGateMode === "enforce";
 
   const fnlTargets = await db.target.findMany({
     where: {
@@ -736,6 +759,21 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
   for (const [, weekTargets] of targetsByWeek) {
     const weekStart = weekTargets[0].periodStart;
     const weekEnd = weekTargets[0].periodEnd;
+
+    // Phase 5.1 — single batched read of (PI, GM) per (store, week). The
+    // ingest endpoint is the source of truth for piHoldFlag/gmAchieved; the
+    // engine only consumes them. Missing row = no data yet → treat as
+    // passing (engine fails open; the admin console surfaces stores with no
+    // metric so ops can chase the feed).
+    const weekStoreCodes = weekTargets.map((t) => t.storeCode);
+    const weeklyMetrics = await db.storeWeeklyMetric.findMany({
+      where: {
+        vertical: Vertical.FNL,
+        storeCode: { in: weekStoreCodes },
+        periodStart: weekStart,
+      },
+    });
+    const metricByStore = new Map(weeklyMetrics.map((m) => [m.storeCode, m]));
 
     await runCalculation(
       {
@@ -798,29 +836,74 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
           const dmCount = activeEmployees
             .filter((e) => e.payrollStatus === PayrollStatus.ACTIVE)
             .filter((employee) => employee.role === EmployeeRole.DM).length;
-          const split = plan.fnlRoleSplits.find((row) => row.numSms === smCount && row.numDms === dmCount);
+
+          // Annexure split lookup. The FnlRoleSplit table is keyed by exact
+          // (numSms, numDms). Single-MOD stores (1 SM, 0 DM) showed up in
+          // W1 data but aren't in the annexure matrix — the policy doc
+          // calls them out as a 70/30 (CSA/MOD) split with no DM share. We
+          // override here so single-MOD stores still pay out correctly
+          // without polluting the annexure seed.
+          const annexureSplit = plan.fnlRoleSplits.find(
+            (row) => row.numSms === smCount && row.numDms === dmCount,
+          ) ?? null;
+          const isSingleMOD = !annexureSplit && smCount === 1 && dmCount === 0;
+          const splitResolved = !!annexureSplit || isSingleMOD;
+          const saPoolPct = annexureSplit
+            ? asNumber(annexureSplit.saPoolPct)
+            : isSingleMOD ? 70 : 0;
+          const smSharePct = annexureSplit
+            ? asNumber(annexureSplit.smSharePct)
+            : isSingleMOD ? 30 : 0;
+          const dmSharePerDmPct = annexureSplit
+            ? asNumber(annexureSplit.dmSharePerDmPct)
+            : 0;
+
+          // Phase 5.1 — store-week external metrics (PI, GM). Missing row
+          // means the metric ingest hasn't landed yet for this store-week;
+          // we fail open (treat as passing) and the admin console flags
+          // missing-metric stores so ops can chase the feed.
+          const metric = metricByStore.get(target.storeCode) ?? null;
+          const piHoldRaw = !!metric?.piHoldFlag;
+          const gmAchievedRaw = metric ? metric.gmAchieved : true;
+          const piHoldBlocks = piHoldRaw && piHoldEnforced;
+          const gmGateBlocksManagers = !gmAchievedRaw && gmGateEnforced;
 
           const meta = storeMeta.get(target.storeCode);
-          const hasExceeded = actualSales > targetValue && !!split;
+          // Store qualifies for payout iff sales beat target, a split is
+          // resolved, AND PI HOLD doesn't apply. GM is role-conditional
+          // (handled per-employee below) — it doesn't void the whole store.
+          const hasExceeded =
+            actualSales > targetValue && splitResolved && !piHoldBlocks;
 
-          // Pull attendance for *all* SAs (not just eligible ones) so we can
-          // attach INSUFFICIENT_ATTENDANCE reasons even when the employee
-          // didn't earn. Pulled once outside the qualified/unqualified branches.
-          const saIds = activeEmployees
-            .filter((e) => e.role === EmployeeRole.SA)
+          // Phase 5.1 — pull attendance for the entire CSA pool (SA + OMNI
+          // + PT) instead of just SA. We need full per-day status (not just
+          // PRESENT counts) because the new policy disqualifies on ANY
+          // leave during the week — approved or not — not just "fewer than
+          // 5 PRESENT days". Managers (SM/DM) are not attendance-gated by
+          // the policy; we leave their leave-handling to the dateOfExit /
+          // payrollStatus checks above.
+          const csaPoolIds = activeEmployees
+            .filter((e) => isCsaPoolRole(e.role))
             .map((e) => e.employeeId);
-          const allAttendance = saIds.length
+          const allAttendance = csaPoolIds.length
             ? await db.attendance.findMany({
                 where: {
-                  employeeId: { in: saIds },
+                  employeeId: { in: csaPoolIds },
                   date: { gte: target.periodStart, lte: target.periodEnd },
                 },
               })
             : [];
           const presentDaysByEmp = new Map<string, number>();
+          const hasLeaveByEmp = new Map<string, AttendanceStatus>();
           for (const a of allAttendance) {
             if (a.status === AttendanceStatus.PRESENT) {
               presentDaysByEmp.set(a.employeeId, (presentDaysByEmp.get(a.employeeId) ?? 0) + 1);
+            } else if (!hasLeaveByEmp.has(a.employeeId)) {
+              // Capture the *first* non-PRESENT status we see — used for
+              // the LEAVE_IN_WEEK reason payload. Order doesn't matter
+              // semantically (any leave disqualifies); this just gives ops
+              // a representative example to surface.
+              hasLeaveByEmp.set(a.employeeId, a.status);
             }
           }
 
@@ -829,21 +912,31 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
           const minAttendanceDays = Number(planConfig.minWorkingDays ?? 5);
           const storeIncentive = hasExceeded ? actualSales * poolPct : 0;
 
+          // CSA-pool eligibility: ACTIVE + meets attendance minimum + no
+          // leave during the week. The leave check is the new gate from
+          // Phase 5.1; the days-PRESENT check is preserved so a mostly-
+          // absent employee with no recorded leave (data gap) still gets
+          // INSUFFICIENT_ATTENDANCE rather than slipping through.
           const eligibleSAIds = new Set<string>();
           if (hasExceeded) {
             for (const e of activeEmployees) {
-              if (e.role !== EmployeeRole.SA) continue;
+              if (!isCsaPoolRole(e.role)) continue;
               if (e.payrollStatus !== PayrollStatus.ACTIVE) continue;
+              if (hasLeaveByEmp.has(e.employeeId)) continue;
               const days = presentDaysByEmp.get(e.employeeId) ?? 0;
               if (days >= minAttendanceDays) eligibleSAIds.add(e.employeeId);
             }
           }
           const eligibleSACount = eligibleSAIds.size;
 
-          const saPool = hasExceeded ? storeIncentive * (asNumber(split!.saPoolPct) / 100) : 0;
+          const saPool = hasExceeded ? storeIncentive * (saPoolPct / 100) : 0;
           const eachSaPayout = hasExceeded && eligibleSACount > 0 ? saPool / eligibleSACount : 0;
-          const smPayout = hasExceeded ? storeIncentive * (asNumber(split!.smSharePct) / 100) : 0;
-          const dmPayout = hasExceeded ? storeIncentive * (asNumber(split!.dmSharePerDmPct) / 100) : 0;
+          const smPayout = hasExceeded && !gmGateBlocksManagers
+            ? storeIncentive * (smSharePct / 100)
+            : 0;
+          const dmPayout = hasExceeded && !gmGateBlocksManagers
+            ? storeIncentive * (dmSharePerDmPct / 100)
+            : 0;
 
           let storeEarningCount = 0;
           let storeTotalIncentive = 0;
@@ -886,8 +979,77 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
               ));
             }
 
-            // Store-level reason (BLOCKING)
-            if (!hasExceeded) {
+            // Phase 5.1 — Role-not-eligible reason. The policy names CSA
+            // (incl. OMNI/PT for the pilot), SM, and DM as the only eligible
+            // roles. BAs and any other role that lands in an F&L store (rare
+            // but possible) get a clear reason instead of a silent zero.
+            const isPolicyRole =
+              isCsaPoolRole(employee.role) ||
+              employee.role === EmployeeRole.SM ||
+              employee.role === EmployeeRole.DM;
+            if (!isPolicyRole) {
+              reasons.push(makeReason(
+                "ROLE_NOT_ELIGIBLE_FOR_INCENTIVE",
+                "Role not in the F&L incentive policy — no payout path this week.",
+                { role: employee.role },
+              ));
+            }
+
+            // Phase 5.1 — Store PI HOLD. Pilferage Index ≥ 0.30% blocks the
+            // entire store-week regardless of role. We always emit the
+            // reason when the store is on hold; if the pilot is in
+            // "advisory" mode the math doesn't actually block, but the
+            // reason is preserved in the trail so the admin console can
+            // show "would have blocked under enforce mode".
+            if (piHoldRaw) {
+              const piPct = metric?.pilferageIndex
+                ? asNumber(metric.pilferageIndex)
+                : null;
+              reasons.push(makeReason(
+                "STORE_PI_HOLD",
+                piHoldEnforced
+                  ? `Store on PI hold${piPct !== null ? ` (${piPct.toFixed(2)}%)` : ""} — no incentive this week.`
+                  : `Store would be on PI hold${piPct !== null ? ` (${piPct.toFixed(2)}%)` : ""} — advisory mode, payout not blocked.`,
+                {
+                  pilferageIndex: piPct,
+                  enforced: piHoldEnforced,
+                  note: metric?.note ?? null,
+                },
+              ));
+            }
+
+            // Phase 5.1 — Store GM gate. Only emitted for SM/DM. CSAs are
+            // unaffected by GM per policy text — they can still earn even
+            // when the store misses GM. We only attach this reason when
+            // the store would otherwise have qualified (sales beat target,
+            // no PI hold) — otherwise the chain is noisy.
+            if (
+              metric &&
+              !gmAchievedRaw &&
+              (employee.role === EmployeeRole.SM || employee.role === EmployeeRole.DM) &&
+              actualSales > targetValue &&
+              !piHoldBlocks
+            ) {
+              const gmActual = metric.gmActual ? asNumber(metric.gmActual) : null;
+              const gmTarget = metric.gmTarget ? asNumber(metric.gmTarget) : null;
+              reasons.push(makeReason(
+                "STORE_GM_NOT_ACHIEVED",
+                gmGateEnforced
+                  ? `Store missed gross-margin target${gmActual !== null && gmTarget !== null ? ` (${gmActual.toFixed(2)}% vs ${gmTarget.toFixed(2)}%)` : ""} — manager incentive blocked.`
+                  : `Store missed gross-margin target${gmActual !== null && gmTarget !== null ? ` (${gmActual.toFixed(2)}% vs ${gmTarget.toFixed(2)}%)` : ""} — advisory mode, payout not blocked.`,
+                {
+                  gmActual,
+                  gmTarget,
+                  enforced: gmGateEnforced,
+                },
+              ));
+            }
+
+            // Store-level reason (BLOCKING) — only when the store didn't
+            // beat target. Suppressed when PI hold already explains the
+            // zero (otherwise we'd emit two competing blocking reasons for
+            // the same store-week).
+            if (!hasExceeded && !piHoldBlocks && actualSales <= targetValue) {
               reasons.push(makeReason(
                 "STORE_UNQUALIFIED",
                 `Store didn't beat the weekly target (${Math.round(achievementPct * 10) / 10}% of ₹${Math.round(targetValue).toLocaleString("en-IN")}).`,
@@ -895,12 +1057,30 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
               ));
             }
 
-            // Attendance reason for SAs only
+            // Attendance reasons for the CSA pool (SA + OMNI + PT). Two
+            // separate codes: LEAVE_IN_WEEK fires when the employee took
+            // ANY leave (the new policy gate); INSUFFICIENT_ATTENDANCE
+            // fires when they have no recorded leave but still missed the
+            // 5-day floor (data-gap fallback).
             const presentDays = presentDaysByEmp.get(employee.employeeId) ?? 0;
+            const leaveStatusThisWeek = hasLeaveByEmp.get(employee.employeeId) ?? null;
             if (
               hasExceeded &&
               isActive &&
-              employee.role === EmployeeRole.SA &&
+              isCsaPoolRole(employee.role) &&
+              leaveStatusThisWeek
+            ) {
+              reasons.push(makeReason(
+                "LEAVE_IN_WEEK",
+                "Took leave during the incentive week — not eligible per policy (any leave disqualifies).",
+                { leaveStatus: leaveStatusThisWeek, presentDays },
+              ));
+            }
+            if (
+              hasExceeded &&
+              isActive &&
+              isCsaPoolRole(employee.role) &&
+              !leaveStatusThisWeek &&
               presentDays < minAttendanceDays
             ) {
               reasons.push(makeReason(
@@ -910,10 +1090,13 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
               ));
             }
 
-            // Compute amount: only ACTIVE employees with no blocking-reason can earn.
+            // Compute amount: only ACTIVE employees in a policy role with
+            // no blocking-reason can earn. OMNI/PT route through the CSA
+            // pool. SM/DM payout already had GM gate baked in via
+            // smPayout/dmPayout being zero when gmGateBlocksManagers.
             let amount = 0;
-            if (isActive && hasExceeded) {
-              if (employee.role === EmployeeRole.SA && eligibleSAIds.has(employee.employeeId)) {
+            if (isActive && hasExceeded && isPolicyRole) {
+              if (isCsaPoolRole(employee.role) && eligibleSAIds.has(employee.employeeId)) {
                 amount = eachSaPayout;
               } else if (employee.role === EmployeeRole.SM) {
                 amount = smPayout;
@@ -942,8 +1125,30 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
                 targetValue,
                 eligibleSAs: eligibleSACount,
                 storeQualified: hasExceeded,
-                presentDays: employee.role === EmployeeRole.SA ? presentDays : null,
+                presentDays: isCsaPoolRole(employee.role) ? presentDays : null,
+                leaveStatusThisWeek: isCsaPoolRole(employee.role)
+                  ? leaveStatusThisWeek
+                  : null,
                 payrollStatus: employee.payrollStatus,
+                // Phase 5.1 — surface the store-week metric & split context
+                // so the admin drilldown can render "why this number" without
+                // re-querying. Null when no metric was ingested for the week.
+                pilferageIndex: metric?.pilferageIndex
+                  ? asNumber(metric.pilferageIndex)
+                  : null,
+                piHoldFlag: piHoldRaw,
+                piHoldEnforced,
+                gmTarget: metric?.gmTarget ? asNumber(metric.gmTarget) : null,
+                gmActual: metric?.gmActual ? asNumber(metric.gmActual) : null,
+                gmAchieved: gmAchievedRaw,
+                gmGateEnforced,
+                splitMode: annexureSplit
+                  ? "ANNEXURE"
+                  : isSingleMOD
+                    ? "SINGLE_MOD_70_30"
+                    : "UNRESOLVED",
+                smCount,
+                dmCount,
                 reasons,
               },
             });

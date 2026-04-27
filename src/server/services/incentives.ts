@@ -146,7 +146,7 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
   });
   const storeCodes = stores.map((s) => s.storeCode);
 
-  const [ledger, targets, sales] = await Promise.all([
+  const [ledger, targets, sales, weeklyMetrics] = await Promise.all([
     db.incentiveLedger.findMany({
       where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter, ...currentLedgerWhere() },
       select: { storeCode: true, finalIncentive: true },
@@ -160,6 +160,20 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
       _sum: { grossAmount: true },
       where: { storeCode: { in: storeCodes }, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE", ...verticalFilter },
     }),
+    // Phase 5.1 — F&L pilot. PI/GM metrics per store-week within the period.
+    // Cheap: one row per store-week, ~4 weeks/month × 2K stores = 8K rows
+    // for the entire FNL pilot. Returned in the response so the admin store
+    // list can render PI HOLD badges and a "GM weeks" count without a
+    // second round-trip.
+    db.storeWeeklyMetric.findMany({
+      where: {
+        storeCode: { in: storeCodes },
+        periodStart: { gte: params.periodStart, lte: params.periodEnd },
+        ...verticalFilter,
+      },
+      select: { storeCode: true, periodStart: true, piHoldFlag: true, pilferageIndex: true, gmAchieved: true },
+      orderBy: { periodStart: "desc" },
+    }),
   ]);
 
   const salesByStore = new Map(sales.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
@@ -168,15 +182,51 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
   const incByStore = new Map<string, number>();
   for (const r of ledger) { incByStore.set(r.storeCode, (incByStore.get(r.storeCode) ?? 0) + asNumber(r.finalIncentive)); }
 
+  // Per-store metric aggregation. We surface three things:
+  //   1. piHoldAnyWeek — any week in the period was on PI hold (red badge)
+  //   2. gmMissedWeeks — count of weeks where GM wasn't achieved
+  //   3. latestPi — most recent PI reading for the row tooltip
+  type StoreMetricSummary = {
+    piHoldAnyWeek: boolean;
+    gmMissedWeeks: number;
+    weeksWithMetric: number;
+    latestPi: number | null;
+  };
+  const metricByStore = new Map<string, StoreMetricSummary>();
+  for (const m of weeklyMetrics) {
+    const cur = metricByStore.get(m.storeCode) ?? {
+      piHoldAnyWeek: false,
+      gmMissedWeeks: 0,
+      weeksWithMetric: 0,
+      latestPi: null,
+    };
+    cur.piHoldAnyWeek = cur.piHoldAnyWeek || m.piHoldFlag;
+    if (!m.gmAchieved) cur.gmMissedWeeks += 1;
+    cur.weeksWithMetric += 1;
+    // weeklyMetrics is ordered periodStart desc — first hit per store wins.
+    if (cur.latestPi === null && m.pilferageIndex !== null) {
+      cur.latestPi = asNumber(m.pilferageIndex);
+    }
+    metricByStore.set(m.storeCode, cur);
+  }
+
   const rows = stores.map((s) => {
     const target = targetByStore.get(s.storeCode) ?? 0;
     const actual = salesByStore.get(s.storeCode) ?? 0;
+    const metric = metricByStore.get(s.storeCode) ?? null;
     return {
       storeCode: s.storeCode, storeName: s.storeName, vertical: s.vertical, storeFormat: s.storeFormat,
       state: s.state, city: s.city,
       employeeCount: s.employees.length, totalIncentive: Math.round(incByStore.get(s.storeCode) ?? 0),
       target: Math.round(target), actual: Math.round(actual),
       achievementPct: target > 0 ? Math.round((actual / target) * 1000) / 10 : 0,
+      // Phase 5.1 — F&L pilot fields. Null for non-FNL or stores with no
+      // metric row yet (admin UI should treat null as "not applicable" /
+      // "missing data" rather than as "passing").
+      piHoldAnyWeek: metric?.piHoldAnyWeek ?? null,
+      gmMissedWeeks: metric?.gmMissedWeeks ?? null,
+      weeksWithMetric: metric?.weeksWithMetric ?? null,
+      latestPilferageIndex: metric?.latestPi ?? null,
     };
   }).sort((a, b) => b.totalIncentive - a.totalIncentive);
 
@@ -208,20 +258,53 @@ async function getStoreSummary(params: Params) {
     _sum: { grossAmount: true },
     where: { storeCode: { in: storeCodes }, transactionDate: { gte: params.periodStart, lte: params.periodEnd }, transactionType: "NORMAL", channel: "OFFLINE", ...verticalFilter },
   });
+  // Phase 5.1 — F&L pilot. Mirror the all-stores rollup: per-store summary
+  // of weekly PI/GM gates within the period.
+  const weeklyMetrics = await db.storeWeeklyMetric.findMany({
+    where: {
+      storeCode: { in: storeCodes },
+      periodStart: { gte: params.periodStart, lte: params.periodEnd },
+      ...verticalFilter,
+    },
+    select: { storeCode: true, periodStart: true, piHoldFlag: true, pilferageIndex: true, gmAchieved: true },
+    orderBy: { periodStart: "desc" },
+  });
   const salesByStore = new Map(sales.map((s) => [s.storeCode, asNumber(s._sum.grossAmount)]));
   const targetByStore = new Map<string, number>();
   for (const t of targets) { targetByStore.set(t.storeCode, (targetByStore.get(t.storeCode) ?? 0) + asNumber(t.targetValue)); }
   const incByStore = new Map<string, number>();
   for (const r of ledger) { incByStore.set(r.storeCode, (incByStore.get(r.storeCode) ?? 0) + asNumber(r.finalIncentive)); }
+  type StoreMetricSummary = {
+    piHoldAnyWeek: boolean;
+    gmMissedWeeks: number;
+    weeksWithMetric: number;
+    latestPi: number | null;
+  };
+  const metricByStore = new Map<string, StoreMetricSummary>();
+  for (const m of weeklyMetrics) {
+    const cur = metricByStore.get(m.storeCode) ?? {
+      piHoldAnyWeek: false, gmMissedWeeks: 0, weeksWithMetric: 0, latestPi: null,
+    };
+    cur.piHoldAnyWeek = cur.piHoldAnyWeek || m.piHoldFlag;
+    if (!m.gmAchieved) cur.gmMissedWeeks += 1;
+    cur.weeksWithMetric += 1;
+    if (cur.latestPi === null && m.pilferageIndex !== null) cur.latestPi = asNumber(m.pilferageIndex);
+    metricByStore.set(m.storeCode, cur);
+  }
 
   const rows = stores.map((s) => {
     const target = targetByStore.get(s.storeCode) ?? 0;
     const actual = salesByStore.get(s.storeCode) ?? 0;
+    const metric = metricByStore.get(s.storeCode) ?? null;
     return {
       storeCode: s.storeCode, storeName: s.storeName, vertical: s.vertical, storeFormat: s.storeFormat,
       employeeCount: s.employees.length, totalIncentive: Math.round(incByStore.get(s.storeCode) ?? 0),
       target: Math.round(target), actual: Math.round(actual),
       achievementPct: target > 0 ? Math.round((actual / target) * 1000) / 10 : 0,
+      piHoldAnyWeek: metric?.piHoldAnyWeek ?? null,
+      gmMissedWeeks: metric?.gmMissedWeeks ?? null,
+      weeksWithMetric: metric?.weeksWithMetric ?? null,
+      latestPilferageIndex: metric?.latestPi ?? null,
     };
   }).sort((a, b) => b.totalIncentive - a.totalIncentive);
 
@@ -327,6 +410,14 @@ async function getStoreDetail(params: Params) {
     weekStart: string; weekEnd: string;
     weeklySalesTarget: number; actualWeeklyGrossSales: number;
     storeQualifies: boolean; myPayout: number; totalStoreIncentive: number;
+    // Phase 5.1 — F&L pilot. PI / GM at week-level so the admin drilldown
+    // can render "this store qualified on sales but missed GM" without a
+    // second round-trip. Null when no metric was ingested for the week.
+    pilferageIndex?: number | null;
+    piHoldFlag?: boolean | null;
+    gmTarget?: number | null;
+    gmActual?: number | null;
+    gmAchieved?: boolean | null;
   }> = [];
 
   if (store.vertical === "FNL" && ledger.length > 0) {
@@ -347,6 +438,28 @@ async function getStoreDetail(params: Params) {
         payout: (existing?.payout ?? 0) + asNumber(r.finalIncentive),
       });
     }
+
+    // Phase 5.1 — Look up PI/GM metrics for this store across the relevant
+    // weeks in one query and key by periodStart for the merge below.
+    const weekStarts = [...weekMap.values()]
+      .filter((w) => {
+        const span = (new Date(w.end).getTime() - new Date(w.start).getTime()) / (1000 * 60 * 60 * 24);
+        return span <= 10;
+      })
+      .map((w) => new Date(w.start));
+    const fnlWeekMetrics = weekStarts.length
+      ? await db.storeWeeklyMetric.findMany({
+          where: {
+            storeCode: store.storeCode,
+            vertical: "FNL",
+            periodStart: { in: weekStarts },
+          },
+        })
+      : [];
+    const metricByWeekKey = new Map(
+      fnlWeekMetrics.map((m) => [m.periodStart.toISOString().slice(0, 10), m]),
+    );
+
     weekPayouts = [...weekMap.values()]
       .filter((w) => {
         // Filter out monthly aggregates (>10 day span)
@@ -354,15 +467,23 @@ async function getStoreDetail(params: Params) {
         return span <= 10;
       })
       .sort((a, b) => a.start.localeCompare(b.start))
-      .map((w) => ({
-        weekStart: w.start,
-        weekEnd: w.end,
-        weeklySalesTarget: Math.round(w.target),
-        actualWeeklyGrossSales: Math.round(w.actual),
-        storeQualifies: w.actual >= w.target,
-        myPayout: Math.round(w.payout),
-        totalStoreIncentive: Math.round(w.payout),
-      }));
+      .map((w) => {
+        const metric = metricByWeekKey.get(w.start) ?? null;
+        return {
+          weekStart: w.start,
+          weekEnd: w.end,
+          weeklySalesTarget: Math.round(w.target),
+          actualWeeklyGrossSales: Math.round(w.actual),
+          storeQualifies: w.actual >= w.target,
+          myPayout: Math.round(w.payout),
+          totalStoreIncentive: Math.round(w.payout),
+          pilferageIndex: metric?.pilferageIndex ? asNumber(metric.pilferageIndex) : null,
+          piHoldFlag: metric ? metric.piHoldFlag : null,
+          gmTarget: metric?.gmTarget ? asNumber(metric.gmTarget) : null,
+          gmActual: metric?.gmActual ? asNumber(metric.gmActual) : null,
+          gmAchieved: metric ? metric.gmAchieved : null,
+        };
+      });
   }
 
   return {
