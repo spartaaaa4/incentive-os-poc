@@ -554,12 +554,75 @@ function StoreDetailView({ data, onDrill }: { data: Record<string, unknown>; onD
   );
 }
 
+/**
+ * Renders the structured eligibility block returned by `getIncentiveDrilldown`.
+ *
+ * Mirrors the mobile `EligibilityNotice` Molecule so the admin console (maker-
+ * checker workflow) shows the SAME reason codes the SA sees — important for
+ * "why did this person get ₹0?" answerability. BLOCKING reasons sort first,
+ * INELIGIBLE/PARTIAL determines tone.
+ */
+type EligibilityReason = { code: string; severity: "BLOCKING" | "WARNING"; message: string };
+type EligibilityBlock = {
+  status: "ELIGIBLE" | "PARTIAL" | "INELIGIBLE";
+  reasons: EligibilityReason[];
+};
+
+function EligibilityCallout({ eligibility, title }: { eligibility: EligibilityBlock; title?: string }) {
+  if (!eligibility?.reasons?.length) return null;
+  // BLOCKING reasons first — these explain ₹0; warnings are advisory.
+  const sorted = [...eligibility.reasons].sort((a, b) => {
+    if (a.severity === b.severity) return 0;
+    return a.severity === "BLOCKING" ? -1 : 1;
+  });
+  const heading =
+    title ??
+    (eligibility.status === "INELIGIBLE"
+      ? "Not eligible for this period"
+      : eligibility.status === "PARTIAL"
+        ? "Partially eligible"
+        : "Heads up");
+  return (
+    <Alert
+      type={eligibility.status === "INELIGIBLE" ? "error" : "warning"}
+      showIcon
+      message={<Typography.Text strong>{heading}</Typography.Text>}
+      description={
+        <ul style={{ margin: 0, paddingLeft: 18, listStyle: "disc" }}>
+          {sorted.map((r) => (
+            <li key={r.code} style={{ fontSize: 13, lineHeight: 1.5 }}>
+              <Typography.Text type={r.severity === "BLOCKING" ? undefined : "secondary"}>
+                {r.message}
+              </Typography.Text>{" "}
+              <Tag
+                color={r.severity === "BLOCKING" ? "red" : "gold"}
+                style={{ fontSize: 10, marginLeft: 4, transform: "translateY(-1px)" }}
+              >
+                {r.code}
+              </Tag>
+            </li>
+          ))}
+        </ul>
+      }
+    />
+  );
+}
+
 // ── Level 5: Employee detail card ──
 function EmployeeDetailView({ data }: { data: Record<string, unknown> }) {
   const emp = data.employee as { employeeId: string; employeeName: string; role: string; storeCode: string; storeName: string } | undefined;
   const vertical = data.vertical as string;
   const message = data.message as string;
   const period = data.period as { start: string; end: string };
+  // FNL returns per-week eligibility plus a `monthEligibility` aggregate; for
+  // electronics/grocery the period-level `eligibility` is what matters.
+  // Prefer `monthEligibility` when it actually carries reasons (every week
+  // ineligible → STORE_UNQUALIFIED), else fall back to the latest-week
+  // eligibility surfaced as `eligibility`.
+  const monthEligibility = data.monthEligibility as EligibilityBlock | undefined;
+  const periodEligibility = data.eligibility as EligibilityBlock | undefined;
+  const eligibility =
+    monthEligibility && monthEligibility.reasons?.length > 0 ? monthEligibility : periodEligibility;
 
   if (!emp) return <Typography.Text type="secondary">Employee not found.</Typography.Text>;
 
@@ -567,6 +630,16 @@ function EmployeeDetailView({ data }: { data: Record<string, unknown> }) {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      {eligibility?.reasons?.length ? (
+        <EligibilityCallout
+          eligibility={eligibility}
+          title={
+            vertical === "FNL" && monthEligibility?.reasons?.length
+              ? "No qualified weeks this period"
+              : undefined
+          }
+        />
+      ) : null}
       <Card>
         <Flex align="center" gap={12} style={{ marginBottom: 12 }}>
           <div

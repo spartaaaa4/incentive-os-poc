@@ -63,6 +63,172 @@ new findings.
 - `/architecture` — system diagram + 8 key decisions with tradeoffs.
 - `/data-model` — tables grouped into 7 buckets with PK/FK/UK badges.
 
+### Phase 4.6 — Structured eligibility / reason codes
+
+Round-1 testing surfaced three different "₹0 with no explanation" bugs across
+the three engines, each with its own filtering strategy. Closes them with a
+single contract used by every engine and every consumer (mobile + admin).
+
+**Contract — `src/server/calculations/eligibility.ts` (new)**
+
+- `ReasonCode` enum (8 codes): `STORE_NOT_IN_CAMPAIGN`, `STORE_UNQUALIFIED`,
+  `NOTICE_PERIOD`, `DISCIPLINARY_ACTION`, `EXITED_MID_PERIOD`,
+  `INSUFFICIENT_ATTENDANCE`, `NEW_JOINER_PRORATA`, `DEPT_NO_SLABS`,
+  `DEPT_BELOW_THRESHOLD`, `NO_PLAN_APPLICABLE`.
+- `BLOCKING` vs `WARNING` severity. **STORE_UNQUALIFIED is BLOCKING**
+  (decision: a week with no qualified store has no payout — that's a hard
+  fact, not advisory). `NEW_JOINER_PRORATA` and `DEPT_BELOW_THRESHOLD` are
+  `WARNING` (employee still earned something, just less).
+- `buildEligibility(reasons[])` returns `{ status, reasons[],
+  showAchievementNudge, showAttendanceCard }`. `showAchievementNudge=false`
+  when blocking codes make a "reach 85%" nudge nonsensical (this is what
+  closes the AIOT misleading-nudge bug — DEPT_NO_SLABS suppresses it).
+
+**Engines — `src/server/calculations/engines.ts` (modified)**
+
+- Electronics: query broadened to include `NOTICE_PERIOD` /
+  `DISCIPLINARY_ACTION` employees (previously dropped at the query level →
+  silent disappearance). Per-employee loop now emits reasons[] for NP, DA,
+  EXITED, NEW_JOINER, `DEPT_NO_SLABS` (when raw base is 0 but a multiplier
+  exists), and `DEPT_BELOW_THRESHOLD` (when multiplier=0 but target>0).
+  Final earning still gated on `isActive`.
+- Grocery: split fetch into `allCampaignEmployees` + `outOfCampaignEmployees`
+  so out-of-campaign employees get a ledger row tagged
+  `STORE_NOT_IN_CAMPAIGN`. Adds NP / DA reasons.
+- F&L (most invasive): pulls attendance for all SAs upfront, **always emits a
+  ledger row for every active employee** (earner or not, so the mobile/admin
+  knows why they got ₹0). Emits `STORE_UNQUALIFIED`,
+  `INSUFFICIENT_ATTENDANCE`, `NEW_JOINER_PRORATA`, `EXITED_MID_PERIOD`.
+
+**Read assembly — `src/server/services/incentives.ts` (modified)**
+
+- `reasonsFromDetails(details)` defensive parser of
+  `calculationDetails.reasons[]` from the ledger.
+- Empty-row branch returns `eligibility` with `NO_PLAN_APPLICABLE` instead of
+  bare ₹0.
+- `buildElectronicsDetail`, `buildGroceryDetail`, `buildFnlDetail` each
+  return `{ eligibility, ineligibleReason (legacy string for backward compat),
+  message (gated on showAchievementNudge) }`.
+- F&L additionally returns per-week `eligibility` inside `weeks[]` plus a
+  top-level `monthEligibility` (`STORE_UNQUALIFIED` if every week is
+  ineligible).
+
+**Mobile — `incentive-app`**
+
+- New `Molecule/EligibilityNotice/` (jsx + scss). Renders `reasons[]` as a
+  bulleted list, BLOCKING-first, status-tinted (AlertTriangle for INELIGIBLE,
+  Info for PARTIAL).
+- `ElectronicsView` / `GroceryView` / `FnlView` all render the structured
+  notice when `payout.eligibility.reasons[]` exists; legacy single-string
+  `ineligibleReason` renders as fallback for older API responses (forward
+  compat).
+- F&L `showAttendanceCard` is now gated on
+  `eligibility.showAttendanceCard !== false` (skips for SM/DM, hides on
+  store-unqualified weeks).
+- Electronics hero mapper (`mappers/electronics.js`) reads
+  `eligibility.showAchievementNudge` and suppresses `gapToNext` when false →
+  closes the "reach 85%" nudge for AIOT employees with no slabs.
+
+**Admin console — `src/components/dashboard/incentive-drilldown.tsx`**
+
+- New `EligibilityCallout` (Antd `Alert`) renders inside `EmployeeDetailView`
+  when `data.eligibility?.reasons?.length > 0`. BLOCKING reasons sort first,
+  shows reason code as a tag for auditability. For F&L, prefers
+  `monthEligibility` when every week is ineligible. The maker-checker now
+  sees "₹0 because DISCIPLINARY_ACTION" instead of just "₹0".
+
+**Quick win shipped alongside — operationalDays fallback**
+
+`store?.operationalDaysInMonth ?? '—'` at the four sites that crashed when
+the field was missing: `EmployeeHome/views/ElectronicsView.jsx:32`,
+`StoreManagerHome.jsx:695, 742, 768`.
+
+**Test comments resolved (round-1 `Testing.xlsx`)**
+
+| Comment | Root cause | Fix |
+|---|---|---|
+| "Out-of-campaign Grocery employees see blank screen" | Engine dropped them, mobile rendered nothing | `STORE_NOT_IN_CAMPAIGN` reason + Grocery view callout |
+| "AIOT shows 'reach 85%' but has no slabs" | Hero nudge derived locally from tiers, ignored backend | `DEPT_NO_SLABS` + `showAchievementNudge=false` |
+| "F&L unqualified week — no explanation, just ₹0" | Engine never emitted ledger row | F&L always emits row + `STORE_UNQUALIFIED` reason |
+| "NP/DA employees disappear from Electronics" | Query-level filter | Query broadened, reasons emitted |
+| "operationalDays renders as 'undefined / 30'" | Optional field missing in fallback path | `?? '—'` at 4 call sites |
+
+**Reversibility note.** The contract is additive — old mobile builds keep
+working via the legacy `ineligibleReason` string field. Reason codes can be
+added without a migration (the JSON column carries them). Severity changes
+are not free: flipping `STORE_UNQUALIFIED` from BLOCKING to WARNING later
+would resurface the achievement nudge on already-paid weeks; if we change
+severity, do it in a release note.
+
+### Phase 4.7 — Partial-fix slice (UI gating on eligibility)
+
+Phase 4.6 made the eligibility data flow correct end-to-end. This slice
+makes the surrounding UI react to it — the four "callout is there but the
+widget next to it still lies" bugs from round-1 testing.
+
+**F&L weeks-qualified counter (E183) — `incentive-app/src/api/transformers/fnl.js`**
+
+`recentWeeks[].storeQualified` and `weekPayouts[].storeQualifies` now read
+`Boolean(w.storeQualified)` from the API response (backend uses strict
+`actualSales > targetValue`) instead of recomputing locally as
+`actualSales >= targetValue`. The local recomputation flagged 0/0 weeks as
+qualified, so the hero pill said "3/3 weeks qualified" even when no week
+qualified. `monthAggregate.weeksQualified` now derives correctly from the
+fixed flag. Per-week `eligibility` is also forwarded into `weekPayouts[]`
+and `recentWeeks[]` so downstream code (selector, accordion list) can show
+per-week status without a second API call.
+
+**F&L week tab labelling (E183) — `incentive-app/.../FnlView.jsx`**
+
+New `weekOfMonthLabel(weekStart)` derives the label from the period's start
+date (`floor((day - 1) / 7) + 1`, capped at 5). Replaces `i + 1` in the
+period selector. If the engine ever fails to emit a week's row (sparse
+targets, partial recompute), W3 will still render as "W3", not as "W2".
+Phase 4.6 already made the engine emit a row per (employee, week), so the
+density bug is unlikely in practice — this is the belt-and-braces label
+fix.
+
+**Electronics ineligible-widget gating (E008) — `.../views/ElectronicsView.jsx`**
+
+`const isIneligible = payout?.eligibility?.status === 'INELIGIBLE'` gates
+three widgets:
+
+- `DepartmentMultipliers`
+- `WeeklyChallenge`
+- `QuestCard`
+
+Hidden when an employee is on NOTICE_PERIOD / DISCIPLINARY_ACTION / EXITED.
+The EligibilityNotice above the hero carries the explanation; the muted
+multiplier strip and the "0% to next tier" challenge card were louder than
+the actual reason. Badges remain visible (achievements earned earlier are
+still real).
+
+**Grocery store-not-in-campaign gating (E137 BIG GAP) — `.../views/GroceryView.jsx`**
+
+`const storeNotInCampaign = reasons.some(r => r.code === 'STORE_NOT_IN_CAMPAIGN')`
+gates four widgets:
+
+- `VerticalHero` (campaign card)
+- `QuestCard`
+- `Accordion` (Payout slabs + Eligible articles)
+
+Hidden when the store isn't part of the active Grocery campaign. Streak,
+Momentum, and Badges stay (they're past-period signals, not campaign-bound).
+This closes the BIG GAP from round-1 testing — out-of-scope stores no
+longer see a "0% target reached" hero card that implies they could have
+hit it.
+
+When we move to multiple concurrent Grocery campaigns (PlanApplicability
+already supports it on the schema side), this gate becomes per-campaign
+rather than view-global.
+
+**Files touched (this slice)**
+
+- `incentive-app/src/api/transformers/fnl.js` — backend storeQualified flag is authoritative
+- `incentive-app/src/containers/EmployeeHome/views/FnlView.jsx` — weekOfMonthLabel
+- `incentive-app/src/containers/EmployeeHome/views/ElectronicsView.jsx` — isIneligible gate
+- `incentive-app/src/containers/EmployeeHome/views/GroceryView.jsx` — storeNotInCampaign gate
+
 ### Seed & access
 
 - Named admin seed users (`prisma/seed.ts`, `adminSeedUsers` block), all

@@ -1,7 +1,29 @@
-import { Vertical } from "@prisma/client";
+import { EmployeeRole, Vertical } from "@prisma/client";
 import { db } from "@/lib/db";
 import { currentLedgerWhere } from "../calculations/currentLedger";
+import {
+  buildEligibility,
+  type Eligibility,
+  type EligibilityReason,
+  makeReason,
+} from "../calculations/eligibility";
 import { payoutDateFor, workingDaysInPeriod, runRateFor } from "./periodHelpers";
+
+/** Pull `reasons[]` out of a ledger row's calculationDetails JSON safely. */
+function reasonsFromDetails(details: unknown): EligibilityReason[] {
+  if (!details || typeof details !== "object") return [];
+  const arr = (details as Record<string, unknown>).reasons;
+  if (!Array.isArray(arr)) return [];
+  // Defensive: only keep well-formed entries.
+  return arr.filter(
+    (r): r is EligibilityReason =>
+      r != null &&
+      typeof r === "object" &&
+      typeof (r as { code: unknown }).code === "string" &&
+      typeof (r as { severity: unknown }).severity === "string" &&
+      typeof (r as { message: unknown }).message === "string",
+  );
+}
 
 function asNumber(value: unknown): number {
   if (typeof value === "number") return value;
@@ -398,6 +420,15 @@ async function getEmployeeDetail(params: Params) {
   });
 
   if (!ledgerRows.length) {
+    // No ledger row at all means no plan ran for this scope, OR the
+    // engine genuinely had nothing to say. Surface this as a structured
+    // NO_PLAN_APPLICABLE reason so the mobile renders a real message.
+    const eligibility = buildEligibility([
+      makeReason(
+        "NO_PLAN_APPLICABLE",
+        "No incentive data for this period — your role/store may not be in any active plan, or the recompute hasn't run yet.",
+      ),
+    ]);
     return {
       level: "employeeDetail" as const,
       employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
@@ -405,6 +436,7 @@ async function getEmployeeDetail(params: Params) {
       period: { start: params.periodStart.toISOString().slice(0, 10), end: params.periodEnd.toISOString().slice(0, 10) },
       message: "No incentive data found for this period. This employee may not have qualifying sales or the store may not have exceeded its target.",
       currentStanding: null,
+      eligibility,
     };
   }
 
@@ -463,6 +495,8 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
   const base = asNumber(row.baseIncentive);
   const currentMultiplier = asNumber(row.multiplierApplied);
   const final = asNumber(row.finalIncentive);
+
+  const eligibility = buildEligibility(reasonsFromDetails(details));
 
   const multipliers = (row.plan.achievementMultipliers ?? [])
     .sort((a: { achievementFrom: unknown }, b: { achievementFrom: unknown }) => asNumber(a.achievementFrom) - asNumber(b.achievementFrom))
@@ -557,7 +591,16 @@ async function buildElectronicsDetail(employee: any, ledgerRows: any[], params: 
     departments: deptBreakdown,
     multiplierTiers: multipliers,
     recentSales,
-    message: `${empDept ?? "Department"} is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`,
+    eligibility,
+    // Backward-compat: keep `ineligibleReason` populated with the leading
+    // blocking message so older mobile builds keep working. New code should
+    // read `eligibility.reasons[]` instead.
+    ineligibleReason: eligibility.reasons.find((r) => r.severity === "BLOCKING")?.message ?? null,
+    // Suppress the achievement nudge when the *real* reason for ₹0 is something
+    // structural (NP / DA / no slabs). Mobile reads this verbatim from message.
+    message: eligibility.showAchievementNudge
+      ? `${empDept ?? "Department"} is at ${achievementPct}% achievement. You're earning ${currentMultiplier}% multiplier (${fmtInr(final)}).${nudge ? " " + nudge : ""}`
+      : (eligibility.reasons[0]?.message ?? `Not eligible for incentive this period.`),
   };
 }
 
@@ -571,6 +614,8 @@ async function buildGroceryDetail(employee: any, ledgerRows: any[], params: Para
   const achievementPct = asNumber(row.achievementPct);
   const totalStorePayout = asNumber(row.baseIncentive);
   const yourPayout = asNumber(row.finalIncentive);
+
+  const eligibility = buildEligibility(reasonsFromDetails(details));
 
   const campaign = row.campaignId
     ? await db.campaignConfig.findUnique({ where: { id: row.campaignId }, include: { payoutSlabs: true, storeTargets: true } })
@@ -695,7 +740,11 @@ async function buildGroceryDetail(employee: any, ledgerRows: any[], params: Para
     },
     payoutSlabs,
     recentSales,
-    message: `Campaign at ${Math.round(achievementPct * 10) / 10}% of target. Current rate: ₹${rate}/piece (${fmtInr(Math.round(yourPayout))} your share).${nudge ? " " + nudge : ""}${salesNeeded > 0 ? ` Need ${fmtInr(salesNeeded)} more in eligible product sales.` : ""}`,
+    eligibility,
+    ineligibleReason: eligibility.reasons.find((r) => r.severity === "BLOCKING")?.message ?? null,
+    message: eligibility.showAchievementNudge
+      ? `Campaign at ${Math.round(achievementPct * 10) / 10}% of target. Current rate: ₹${rate}/piece (${fmtInr(Math.round(yourPayout))} your share).${nudge ? " " + nudge : ""}${salesNeeded > 0 ? ` Need ${fmtInr(salesNeeded)} more in eligible product sales.` : ""}`
+      : (eligibility.reasons[0]?.message ?? `Not eligible for this campaign.`),
   };
 }
 
@@ -730,13 +779,36 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
 
   const marginalPerLakh = eligibleSAs > 0 ? Math.round((100000 * 0.01 * roleSplit.saPoolPct / 100) / eligibleSAs) : 0;
 
-  const weeks = ledgerRows.map((r: { periodStart: Date; periodEnd: Date; finalIncentive: unknown; calculationDetails: unknown }) => ({
-    periodStart: r.periodStart.toISOString().slice(0, 10),
-    periodEnd: r.periodEnd.toISOString().slice(0, 10),
-    payout: Math.round(asNumber(r.finalIncentive)),
-    actualSales: Math.round(asNumber((r.calculationDetails as Record<string, unknown>)?.actualSales ?? 0)),
-    targetValue: Math.round(asNumber((r.calculationDetails as Record<string, unknown>)?.targetValue ?? 0)),
-  }));
+  // Per-week breakdown — each row carries its own reasons[]. The mobile uses
+  // these to render the per-week status pills and to drive `active.eligibility`
+  // when the user toggles between weeks.
+  const weeks = ledgerRows.map((r: { periodStart: Date; periodEnd: Date; finalIncentive: unknown; calculationDetails: unknown; role?: string }) => {
+    const wDetails = (r.calculationDetails ?? {}) as Record<string, unknown>;
+    const wReasons = reasonsFromDetails(wDetails);
+    const wPresentDays = wDetails.presentDays as number | null | undefined;
+    const wStoreQualified = Boolean(wDetails.storeQualified);
+    const wEligibility = buildEligibility(wReasons, {
+      // Show the 5-day card only for SAs whose payroll status is normal-ish.
+      // For NP / DA the card is moot.
+      showAttendanceCard:
+        employee.role === EmployeeRole.SA &&
+        wDetails.payrollStatus === "ACTIVE",
+    });
+    return {
+      periodStart: r.periodStart.toISOString().slice(0, 10),
+      periodEnd: r.periodEnd.toISOString().slice(0, 10),
+      payout: Math.round(asNumber(r.finalIncentive)),
+      actualSales: Math.round(asNumber(wDetails.actualSales ?? 0)),
+      targetValue: Math.round(asNumber(wDetails.targetValue ?? 0)),
+      storeQualified: wStoreQualified,
+      presentDays: typeof wPresentDays === "number" ? wPresentDays : null,
+      eligibility: wEligibility,
+      // Backward-compat flags the mobile already reads.
+      storeQualifies: wStoreQualified,
+      myAttendanceEligible: wEligibility.reasons.every((reason) => reason.code !== "INSUFFICIENT_ATTENDANCE"),
+      ineligibleReason: wEligibility.reasons.find((reason) => reason.severity === "BLOCKING")?.message ?? null,
+    };
+  });
 
   // Roster + attendance aggregation for the latest week
   const weekStart = latestRow.periodStart;
@@ -771,6 +843,19 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
   const wd = workingDaysInPeriod(weekStart, weekEnd);
   const payoutDate = payoutDateFor("FNL", weekEnd);
 
+  // Top-level eligibility reflects the latest week (what the mobile lands on
+  // by default). Month-aggregate is INELIGIBLE only if every week is.
+  const latestEligibility = weeks[0]?.eligibility ?? buildEligibility([]);
+  const allWeeksIneligible = weeks.length > 0 && weeks.every((w) => w.eligibility.status === "INELIGIBLE");
+  const monthEligibility: Eligibility = allWeeksIneligible
+    ? buildEligibility([
+        makeReason(
+          "STORE_UNQUALIFIED",
+          "No weeks qualified — the store didn't beat target in any week this month.",
+        ),
+      ])
+    : buildEligibility([]);
+
   return {
     level: "employeeDetail" as const,
     employee: { employeeId: employee.employeeId, employeeName: employee.employeeName, role: employee.role, storeCode: employee.storeCode, storeName: employee.store.storeName },
@@ -780,6 +865,9 @@ async function buildFnlDetail(employee: any, ledgerRows: any[], params: Params) 
     workingDays: { current: wd.current, total: wd.total, daysLeft: wd.daysLeft },
     staffing: { sms: smCount, dms: dmCount, eligibleSAs, minWorkingDays },
     roster: employees,
+    eligibility: latestEligibility,
+    monthEligibility,
+    ineligibleReason: latestEligibility.reasons.find((r) => r.severity === "BLOCKING")?.message ?? null,
     currentStanding: {
       weeklyTarget: Math.round(targetValue), weeklyActual: Math.round(actualSales),
       achievementPct: targetValue > 0 ? Math.round((actualSales / targetValue) * 1000) / 10 : 0,

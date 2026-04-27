@@ -14,6 +14,7 @@ import {
   LedgerRowInput,
   runCalculation,
 } from "./runCoordinator";
+import { EligibilityReason, makeReason } from "./eligibility";
 
 type RecalculateInput = {
   storeCodes: string[];
@@ -190,8 +191,20 @@ async function computeElectronics(input: RecalculateInput): Promise<void> {
 
         dailyRows.push(...txns);
 
+        // Broadened from `payrollStatus: ACTIVE` to also include NOTICE_PERIOD
+        // and DISCIPLINARY_ACTION so the mobile app can render *why* those
+        // employees see ₹0 instead of falling into the "no data" branch.
         const storeEmployees = await db.employeeMaster.findMany({
-          where: { storeCode, payrollStatus: PayrollStatus.ACTIVE },
+          where: {
+            storeCode,
+            payrollStatus: {
+              in: [
+                PayrollStatus.ACTIVE,
+                PayrollStatus.NOTICE_PERIOD,
+                PayrollStatus.DISCIPLINARY_ACTION,
+              ],
+            },
+          },
         });
         const employeeDeptMap = new Map<string, string | null>();
         for (const emp of storeEmployees) {
@@ -276,14 +289,83 @@ async function computeElectronics(input: RecalculateInput): Promise<void> {
         }
         const storeAchievementPct = storeTargetSum > 0 ? (storeActualSum / storeTargetSum) * 100 : 0;
 
+        // Find the lowest multiplier-tier threshold so we can label
+        // DEPT_BELOW_THRESHOLD with a concrete number for the mobile copy.
+        const lowestMultiplierFrom = plan.achievementMultipliers.length
+          ? Math.min(...plan.achievementMultipliers.map((m) => asNumber(m.achievementFrom)))
+          : 0;
+
         for (const emp of storeEmployees) {
           const employeeId = emp.employeeId;
           const empDept = employeeDeptMap.get(employeeId);
-          const base = employeeBase.get(employeeId) ?? 0;
+          const isActive = emp.payrollStatus === PayrollStatus.ACTIVE;
+          const rawBase = employeeBase.get(employeeId) ?? 0;
           const deptInfo = empDept ? deptAchievement.get(empDept) : undefined;
           const multiplierPct = deptInfo?.multiplierPct ?? 0;
           const achievementPct = deptInfo?.achievementPct ?? 0;
-          const finalIncentive = base * (multiplierPct / 100);
+
+          // Compute reason codes. Order matters for the leading message: the
+          // first BLOCKING reason is what the mobile foregrounds.
+          const reasons: EligibilityReason[] = [];
+
+          if (emp.payrollStatus === PayrollStatus.NOTICE_PERIOD) {
+            reasons.push(makeReason(
+              "NOTICE_PERIOD",
+              "On notice — not eligible for incentive payout this period.",
+              { payrollStatus: emp.payrollStatus },
+            ));
+          }
+          if (emp.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION) {
+            reasons.push(makeReason(
+              "DISCIPLINARY_ACTION",
+              "Under disciplinary action — incentive on hold for this period.",
+              { payrollStatus: emp.payrollStatus },
+            ));
+          }
+          if (emp.dateOfExit && emp.dateOfExit < periodEnd && emp.dateOfExit >= periodStart) {
+            reasons.push(makeReason(
+              "EXITED_MID_PERIOD",
+              "Exited mid-period — not eligible for this month's payout.",
+              { dateOfExit: emp.dateOfExit.toISOString().slice(0, 10) },
+            ));
+          }
+          if (emp.dateOfJoining > periodStart && emp.dateOfJoining <= periodEnd) {
+            reasons.push(makeReason(
+              "NEW_JOINER_PRORATA",
+              "Joined mid-period — payout pro-rated for this month.",
+              { dateOfJoining: emp.dateOfJoining.toISOString().slice(0, 10) },
+            ));
+          }
+
+          // Plan / achievement reasons only matter for ACTIVE employees who
+          // could otherwise have earned. NP/DA we already explained above.
+          if (isActive && rawBase === 0 && multiplierPct > 0 && achievementPct >= lowestMultiplierFrom) {
+            // Department hit a multiplier tier but no slab matched any txn.
+            // This is the AIOT-style "your department earned 0.8x but the plan
+            // has no slabs for what you sell" case from the testing sheet.
+            reasons.push(makeReason(
+              "DEPT_NO_SLABS",
+              empDept
+                ? `${empDept} has no incentive slabs in this plan — no payout possible regardless of achievement.`
+                : "Your department has no incentive slabs in this plan.",
+              { department: empDept, achievementPct },
+            ));
+          } else if (isActive && multiplierPct === 0 && achievementPct < lowestMultiplierFrom) {
+            // Below the lowest tier. Don't emit if there's literally no target
+            // (deptInfo undefined) — that's a different bug class.
+            if (deptInfo && deptInfo.target > 0) {
+              reasons.push(makeReason(
+                "DEPT_BELOW_THRESHOLD",
+                `${empDept ?? "Department"} at ${Math.round(achievementPct * 10) / 10}% — needs ${lowestMultiplierFrom}% to start earning.`,
+                { currentPct: achievementPct, requiredPct: lowestMultiplierFrom, department: empDept },
+              ));
+            }
+          }
+
+          // Final incentive: zero out for any non-ACTIVE payroll status. ACTIVE
+          // earns base × multiplier as before.
+          const base = isActive ? rawBase : 0;
+          const finalIncentive = isActive ? base * (multiplierPct / 100) : 0;
           if (finalIncentive > 0) earningCount += 1;
           storeTotalIncentive += finalIncentive;
 
@@ -309,6 +391,8 @@ async function computeElectronics(input: RecalculateInput): Promise<void> {
               departmentTarget: deptInfo?.target ?? 0,
               departmentActual: deptInfo?.actual ?? 0,
               departments: Object.fromEntries(deptAchievement),
+              payrollStatus: emp.payrollStatus,
+              reasons,
             },
           });
 
@@ -321,7 +405,7 @@ async function computeElectronics(input: RecalculateInput): Promise<void> {
             periodEnd,
             earned: finalIncentive,
             eligible: base,
-            potential: base * (topMultiplier / 100),
+            potential: isActive ? base * (topMultiplier / 100) : 0,
             achievementPct,
             multiplierApplied: multiplierPct,
           });
@@ -399,7 +483,10 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
           .filter((st) => input.storeCodes.includes(st.storeCode))
           .map((st) => st.storeCode);
 
-        const [allCampaignSales, allCampaignEmployees] = await Promise.all([
+        // Pull employees for *all* scope stores, not just in-campaign ones, so
+        // we can emit STORE_NOT_IN_CAMPAIGN rows for the out-of-campaign stores.
+        // Include NP/DA so the mobile app can render *why* they see ₹0.
+        const [allCampaignSales, allScopeEmployees] = await Promise.all([
           db.salesTransaction.findMany({
             where: {
               storeCode: { in: relevantStoreCodes },
@@ -410,12 +497,24 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
           }),
           db.employeeMaster.findMany({
             where: {
-              storeCode: { in: relevantStoreCodes },
-              payrollStatus: PayrollStatus.ACTIVE,
+              storeCode: { in: input.storeCodes },
+              payrollStatus: {
+                in: [
+                  PayrollStatus.ACTIVE,
+                  PayrollStatus.NOTICE_PERIOD,
+                  PayrollStatus.DISCIPLINARY_ACTION,
+                ],
+              },
               role: { in: [EmployeeRole.SM, EmployeeRole.DM, EmployeeRole.SA, EmployeeRole.BA] },
             },
           }),
         ]);
+        const allCampaignEmployees = allScopeEmployees.filter((e) =>
+          relevantStoreCodes.includes(e.storeCode),
+        );
+        const outOfCampaignEmployees = allScopeEmployees.filter(
+          (e) => !relevantStoreCodes.includes(e.storeCode),
+        );
 
         const salesByStore = new Map<string, typeof allCampaignSales>();
         for (const s of allCampaignSales) {
@@ -451,6 +550,26 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
           const targetVal = asNumber(storeTarget.targetValue);
 
           for (const employee of employees) {
+            const isActive = employee.payrollStatus === PayrollStatus.ACTIVE;
+            const reasons: EligibilityReason[] = [];
+
+            if (employee.payrollStatus === PayrollStatus.NOTICE_PERIOD) {
+              reasons.push(makeReason(
+                "NOTICE_PERIOD",
+                "On notice — not eligible for incentive payout this campaign.",
+                { payrollStatus: employee.payrollStatus },
+              ));
+            }
+            if (employee.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION) {
+              reasons.push(makeReason(
+                "DISCIPLINARY_ACTION",
+                "Under disciplinary action — incentive on hold for this campaign.",
+                { payrollStatus: employee.payrollStatus },
+              ));
+            }
+
+            const finalForEmployee = isActive ? individualPayout : 0;
+
             ledgerRows.push({
               planId: campaign.planId,
               campaignId: campaign.id,
@@ -461,13 +580,15 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
               periodEnd: campaign.endDate,
               baseIncentive: totalIncentive,
               achievementPct,
-              finalIncentive: individualPayout,
+              finalIncentive: finalForEmployee,
               calculationDetails: {
                 totalPieces,
                 rate,
                 employeeCount: employees.length,
                 targetValue: targetVal,
                 actualSales: totalSalesValue,
+                payrollStatus: employee.payrollStatus,
+                reasons,
               },
             });
 
@@ -478,9 +599,9 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
               vertical: Vertical.GROCERY,
               periodStart: campaign.startDate,
               periodEnd: campaign.endDate,
-              earned: individualPayout,
-              eligible: individualPayout,
-              potential: individualPotential,
+              earned: finalForEmployee,
+              eligible: finalForEmployee,
+              potential: isActive ? individualPotential : 0,
               achievementPct,
               multiplierApplied: null,
             });
@@ -504,6 +625,70 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
               earningCount: totalIncentive > 0 ? employees.length : 0,
             });
           }
+        }
+
+        // STORE_NOT_IN_CAMPAIGN: emit zero-payout rows for employees in
+        // scope-stores that aren't in this campaign's storeTargets, so the
+        // mobile app can render "Your store is not in [Campaign] this period"
+        // instead of a blank screen.
+        for (const employee of outOfCampaignEmployees) {
+          const reasons: EligibilityReason[] = [
+            makeReason(
+              "STORE_NOT_IN_CAMPAIGN",
+              `Your store is not in the "${campaign.campaignName}" campaign this period.`,
+              { campaignId: campaign.id, campaignName: campaign.campaignName },
+            ),
+          ];
+          if (employee.payrollStatus === PayrollStatus.NOTICE_PERIOD) {
+            reasons.push(makeReason(
+              "NOTICE_PERIOD",
+              "On notice — not eligible for incentive payout this campaign.",
+              { payrollStatus: employee.payrollStatus },
+            ));
+          }
+          if (employee.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION) {
+            reasons.push(makeReason(
+              "DISCIPLINARY_ACTION",
+              "Under disciplinary action — incentive on hold for this campaign.",
+              { payrollStatus: employee.payrollStatus },
+            ));
+          }
+
+          ledgerRows.push({
+            planId: campaign.planId,
+            campaignId: campaign.id,
+            employeeId: employee.employeeId,
+            storeCode: employee.storeCode,
+            vertical: Vertical.GROCERY,
+            periodStart: campaign.startDate,
+            periodEnd: campaign.endDate,
+            baseIncentive: 0,
+            achievementPct: 0,
+            finalIncentive: 0,
+            calculationDetails: {
+              totalPieces: 0,
+              rate: 0,
+              employeeCount: 0,
+              targetValue: 0,
+              actualSales: 0,
+              payrollStatus: employee.payrollStatus,
+              reasons,
+            },
+          });
+
+          employeeRollups.push({
+            employeeId: employee.employeeId,
+            planId: campaign.planId,
+            storeCode: employee.storeCode,
+            vertical: Vertical.GROCERY,
+            periodStart: campaign.startDate,
+            periodEnd: campaign.endDate,
+            earned: 0,
+            eligible: 0,
+            potential: 0,
+            achievementPct: 0,
+            multiplierApplied: null,
+          });
         }
 
         return {
@@ -607,42 +792,23 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
             if (e.dateOfExit && e.dateOfExit < target.periodStart) return false;
             return true;
           });
-          const smCount = activeEmployees.filter((employee) => employee.role === EmployeeRole.SM).length;
-          const dmCount = activeEmployees.filter((employee) => employee.role === EmployeeRole.DM).length;
+          const smCount = activeEmployees
+            .filter((e) => e.payrollStatus === PayrollStatus.ACTIVE)
+            .filter((employee) => employee.role === EmployeeRole.SM).length;
+          const dmCount = activeEmployees
+            .filter((e) => e.payrollStatus === PayrollStatus.ACTIVE)
+            .filter((employee) => employee.role === EmployeeRole.DM).length;
           const split = plan.fnlRoleSplits.find((row) => row.numSms === smCount && row.numDms === dmCount);
 
           const meta = storeMeta.get(target.storeCode);
           const hasExceeded = actualSales > targetValue && !!split;
 
-          if (!hasExceeded) {
-            // Still emit zero-payout rollup so the dashboard shows "didn't qualify"
-            if (meta) {
-              storeRollups.push({
-                storeCode: target.storeCode,
-                planId: plan.id,
-                vertical: Vertical.FNL,
-                city: meta.city,
-                state: meta.state,
-                periodStart: target.periodStart,
-                periodEnd: target.periodEnd,
-                targetValue,
-                actualSales,
-                achievementPct: Math.round(achievementPct * 100) / 100,
-                totalIncentive: 0,
-                employeeCount: activeEmployees.length,
-                earningCount: 0,
-              });
-            }
-            continue;
-          }
-
-          const planConfig = (plan.config ?? {}) as Record<string, unknown>;
-          const poolPct = asNumber(planConfig.poolPct ?? 1) / 100;
-          const storeIncentive = actualSales * poolPct;
-
-          const disbursableEmployees = activeEmployees.filter((e) => e.payrollStatus === PayrollStatus.ACTIVE);
-          const saEmployees = disbursableEmployees.filter((employee) => employee.role === EmployeeRole.SA);
-          const saIds = saEmployees.map((e) => e.employeeId);
+          // Pull attendance for *all* SAs (not just eligible ones) so we can
+          // attach INSUFFICIENT_ATTENDANCE reasons even when the employee
+          // didn't earn. Pulled once outside the qualified/unqualified branches.
+          const saIds = activeEmployees
+            .filter((e) => e.role === EmployeeRole.SA)
+            .map((e) => e.employeeId);
           const allAttendance = saIds.length
             ? await db.attendance.findMany({
                 where: {
@@ -651,35 +817,115 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
                 },
               })
             : [];
-          const attendanceByEmp = new Map<string, typeof allAttendance>();
+          const presentDaysByEmp = new Map<string, number>();
           for (const a of allAttendance) {
-            const list = attendanceByEmp.get(a.employeeId) ?? [];
-            list.push(a);
-            attendanceByEmp.set(a.employeeId, list);
-          }
-          const eligibleSAs: string[] = [];
-          for (const employee of saEmployees) {
-            const weekAttendance = attendanceByEmp.get(employee.employeeId) ?? [];
-            const presentDays = weekAttendance.filter((day) => day.status === AttendanceStatus.PRESENT).length;
-            if (presentDays >= 5) eligibleSAs.push(employee.employeeId);
+            if (a.status === AttendanceStatus.PRESENT) {
+              presentDaysByEmp.set(a.employeeId, (presentDaysByEmp.get(a.employeeId) ?? 0) + 1);
+            }
           }
 
-          const saPool = storeIncentive * (asNumber(split!.saPoolPct) / 100);
-          const eachSaPayout = eligibleSAs.length ? saPool / eligibleSAs.length : 0;
-          const smPayout = storeIncentive * (asNumber(split!.smSharePct) / 100);
-          const dmPayout = storeIncentive * (asNumber(split!.dmSharePerDmPct) / 100);
+          const planConfig = (plan.config ?? {}) as Record<string, unknown>;
+          const poolPct = asNumber(planConfig.poolPct ?? 1) / 100;
+          const minAttendanceDays = Number(planConfig.minWorkingDays ?? 5);
+          const storeIncentive = hasExceeded ? actualSales * poolPct : 0;
+
+          const eligibleSAIds = new Set<string>();
+          if (hasExceeded) {
+            for (const e of activeEmployees) {
+              if (e.role !== EmployeeRole.SA) continue;
+              if (e.payrollStatus !== PayrollStatus.ACTIVE) continue;
+              const days = presentDaysByEmp.get(e.employeeId) ?? 0;
+              if (days >= minAttendanceDays) eligibleSAIds.add(e.employeeId);
+            }
+          }
+          const eligibleSACount = eligibleSAIds.size;
+
+          const saPool = hasExceeded ? storeIncentive * (asNumber(split!.saPoolPct) / 100) : 0;
+          const eachSaPayout = hasExceeded && eligibleSACount > 0 ? saPool / eligibleSACount : 0;
+          const smPayout = hasExceeded ? storeIncentive * (asNumber(split!.smSharePct) / 100) : 0;
+          const dmPayout = hasExceeded ? storeIncentive * (asNumber(split!.dmSharePerDmPct) / 100) : 0;
 
           let storeEarningCount = 0;
           let storeTotalIncentive = 0;
-          for (const employee of disbursableEmployees) {
-            let amount = 0;
-            if (employee.role === EmployeeRole.SA && eligibleSAs.includes(employee.employeeId)) amount = eachSaPayout;
-            if (employee.role === EmployeeRole.SM) amount = smPayout;
-            if (employee.role === EmployeeRole.DM) amount = dmPayout;
-            if (amount <= 0) continue;
 
-            storeTotalIncentive += amount;
-            storeEarningCount += 1;
+          // Emit a ledger row for *every* employee in activeEmployees — earners
+          // and non-earners alike — so the mobile app can render the correct
+          // reason instead of falling into the "no incentive data" branch.
+          for (const employee of activeEmployees) {
+            const isActive = employee.payrollStatus === PayrollStatus.ACTIVE;
+            const reasons: EligibilityReason[] = [];
+
+            // Payroll-driven reasons (BLOCKING)
+            if (employee.payrollStatus === PayrollStatus.NOTICE_PERIOD) {
+              reasons.push(makeReason(
+                "NOTICE_PERIOD",
+                "On notice — not eligible for incentive payout this week.",
+                { payrollStatus: employee.payrollStatus },
+              ));
+            }
+            if (employee.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION) {
+              reasons.push(makeReason(
+                "DISCIPLINARY_ACTION",
+                "Under disciplinary action — incentive on hold for this week.",
+                { payrollStatus: employee.payrollStatus },
+              ));
+            }
+            if (employee.dateOfExit && employee.dateOfExit < target.periodEnd && employee.dateOfExit >= target.periodStart) {
+              reasons.push(makeReason(
+                "EXITED_MID_PERIOD",
+                "Exited mid-week — not eligible for this week's payout.",
+                { dateOfExit: employee.dateOfExit.toISOString().slice(0, 10) },
+              ));
+            }
+            // Mid-period joiner (warning, still earns pro-rata if attendance ok)
+            if (employee.dateOfJoining > target.periodStart && employee.dateOfJoining <= target.periodEnd) {
+              reasons.push(makeReason(
+                "NEW_JOINER_PRORATA",
+                "Joined mid-week — payout pro-rated.",
+                { dateOfJoining: employee.dateOfJoining.toISOString().slice(0, 10) },
+              ));
+            }
+
+            // Store-level reason (BLOCKING)
+            if (!hasExceeded) {
+              reasons.push(makeReason(
+                "STORE_UNQUALIFIED",
+                `Store didn't beat the weekly target (${Math.round(achievementPct * 10) / 10}% of ₹${Math.round(targetValue).toLocaleString("en-IN")}).`,
+                { actualSales, targetValue, achievementPct },
+              ));
+            }
+
+            // Attendance reason for SAs only
+            const presentDays = presentDaysByEmp.get(employee.employeeId) ?? 0;
+            if (
+              hasExceeded &&
+              isActive &&
+              employee.role === EmployeeRole.SA &&
+              presentDays < minAttendanceDays
+            ) {
+              reasons.push(makeReason(
+                "INSUFFICIENT_ATTENDANCE",
+                `${presentDays} of ${minAttendanceDays} days PRESENT — minimum ${minAttendanceDays} needed for this week's payout.`,
+                { presentDays, required: minAttendanceDays },
+              ));
+            }
+
+            // Compute amount: only ACTIVE employees with no blocking-reason can earn.
+            let amount = 0;
+            if (isActive && hasExceeded) {
+              if (employee.role === EmployeeRole.SA && eligibleSAIds.has(employee.employeeId)) {
+                amount = eachSaPayout;
+              } else if (employee.role === EmployeeRole.SM) {
+                amount = smPayout;
+              } else if (employee.role === EmployeeRole.DM) {
+                amount = dmPayout;
+              }
+            }
+
+            if (amount > 0) {
+              storeTotalIncentive += amount;
+              storeEarningCount += 1;
+            }
 
             ledgerRows.push({
               planId: plan.id,
@@ -691,7 +937,15 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
               baseIncentive: storeIncentive,
               finalIncentive: amount,
               achievementPct,
-              calculationDetails: { actualSales, targetValue, eligibleSAs: eligibleSAs.length },
+              calculationDetails: {
+                actualSales,
+                targetValue,
+                eligibleSAs: eligibleSACount,
+                storeQualified: hasExceeded,
+                presentDays: employee.role === EmployeeRole.SA ? presentDays : null,
+                payrollStatus: employee.payrollStatus,
+                reasons,
+              },
             });
 
             employeeRollups.push({
@@ -707,6 +961,27 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
               achievementPct,
               multiplierApplied: null,
             });
+          }
+
+          // If the store didn't qualify, we still emit the storeRollup below
+          // (was previously gated behind the unreachable `continue`).
+          if (!hasExceeded && meta) {
+            storeRollups.push({
+              storeCode: target.storeCode,
+              planId: plan.id,
+              vertical: Vertical.FNL,
+              city: meta.city,
+              state: meta.state,
+              periodStart: target.periodStart,
+              periodEnd: target.periodEnd,
+              targetValue,
+              actualSales,
+              achievementPct: Math.round(achievementPct * 100) / 100,
+              totalIncentive: 0,
+              employeeCount: activeEmployees.length,
+              earningCount: 0,
+            });
+            continue;
           }
 
           if (meta) {
