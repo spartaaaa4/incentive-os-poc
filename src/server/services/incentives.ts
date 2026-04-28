@@ -146,7 +146,7 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
   });
   const storeCodes = stores.map((s) => s.storeCode);
 
-  const [ledger, targets, sales, weeklyMetrics] = await Promise.all([
+  const [ledger, targets, sales, weeklyMetrics, monthlyMetrics] = await Promise.all([
     db.incentiveLedger.findMany({
       where: { storeCode: { in: storeCodes }, periodStart: { gte: params.periodStart }, periodEnd: { lte: params.periodEnd }, ...verticalFilter, ...currentLedgerWhere() },
       select: { storeCode: true, finalIncentive: true },
@@ -172,6 +172,27 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
         ...verticalFilter,
       },
       select: { storeCode: true, periodStart: true, piHoldFlag: true, pilferageIndex: true, gmAchieved: true },
+      orderBy: { periodStart: "desc" },
+    }),
+    // Phase 6.1 — Grocery HR Sales pilot. Monthly metrics carry sales
+    // achievement %, the two quality ratings, and the canonical
+    // salesStatus. Surfaced alongside the F&L weekly metrics so the
+    // admin store list can render quality badges + sales-bucket pills.
+    db.storeMonthlyMetric.findMany({
+      where: {
+        storeCode: { in: storeCodes },
+        periodStart: { gte: params.periodStart, lte: params.periodEnd },
+        ...verticalFilter,
+      },
+      select: {
+        storeCode: true,
+        periodStart: true,
+        salesAchievementPct: true,
+        salesBucket: true,
+        mysteryShopperRating: true,
+        popComplianceRating: true,
+        salesStatus: true,
+      },
       orderBy: { periodStart: "desc" },
     }),
   ]);
@@ -210,10 +231,55 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
     metricByStore.set(m.storeCode, cur);
   }
 
+  // Phase 6.1 — Grocery HR Sales pilot. Per-store monthly aggregation:
+  //   - latestSalesAch    — most recent achievement % (decimal fraction)
+  //   - latestSalesBucket — most recent band label
+  //   - latestSalesStatus — most recent quality-gate status
+  //   - latestRatings     — Mystery Shopper / POP Compliance pair
+  //   - monthsWithMetric  — count of months in period with a metric row
+  //   - monthsManagerBlocked — count of months where managers were blocked
+  type GroceryMetricSummary = {
+    latestSalesAch: number | null;
+    latestSalesBucket: string | null;
+    latestSalesStatus: string | null;
+    latestMysteryRating: string | null;
+    latestPopRating: string | null;
+    monthsWithMetric: number;
+    monthsManagerBlocked: number;
+    monthsNoneQualified: number;
+  };
+  const groceryByStore = new Map<string, GroceryMetricSummary>();
+  for (const m of monthlyMetrics) {
+    const cur = groceryByStore.get(m.storeCode) ?? {
+      latestSalesAch: null,
+      latestSalesBucket: null,
+      latestSalesStatus: null,
+      latestMysteryRating: null,
+      latestPopRating: null,
+      monthsWithMetric: 0,
+      monthsManagerBlocked: 0,
+      monthsNoneQualified: 0,
+    };
+    cur.monthsWithMetric += 1;
+    if (m.salesStatus === "ONLY_ASSOCIATES_QUALIFIED") cur.monthsManagerBlocked += 1;
+    if (m.salesStatus === "NONE_QUALIFIED") cur.monthsNoneQualified += 1;
+    // monthlyMetrics ordered periodStart desc — first hit per store wins
+    // for "latest" fields.
+    if (cur.latestSalesAch === null && m.salesAchievementPct !== null) {
+      cur.latestSalesAch = asNumber(m.salesAchievementPct);
+      cur.latestSalesBucket = m.salesBucket;
+      cur.latestSalesStatus = m.salesStatus;
+      cur.latestMysteryRating = m.mysteryShopperRating;
+      cur.latestPopRating = m.popComplianceRating;
+    }
+    groceryByStore.set(m.storeCode, cur);
+  }
+
   const rows = stores.map((s) => {
     const target = targetByStore.get(s.storeCode) ?? 0;
     const actual = salesByStore.get(s.storeCode) ?? 0;
     const metric = metricByStore.get(s.storeCode) ?? null;
+    const groc = groceryByStore.get(s.storeCode) ?? null;
     return {
       storeCode: s.storeCode, storeName: s.storeName, vertical: s.vertical, storeFormat: s.storeFormat,
       state: s.state, city: s.city,
@@ -227,6 +293,16 @@ export async function getAllStoresSummary(params: Pick<Params, "vertical" | "per
       gmMissedWeeks: metric?.gmMissedWeeks ?? null,
       weeksWithMetric: metric?.weeksWithMetric ?? null,
       latestPilferageIndex: metric?.latestPi ?? null,
+      // Phase 6.1 — Grocery HR Sales fields. Null for non-Grocery or
+      // stores with no monthly-metric row yet.
+      latestSalesAchievementPct: groc?.latestSalesAch ?? null,
+      latestSalesBucket: groc?.latestSalesBucket ?? null,
+      latestSalesStatus: groc?.latestSalesStatus ?? null,
+      latestMysteryShopperRating: groc?.latestMysteryRating ?? null,
+      latestPopComplianceRating: groc?.latestPopRating ?? null,
+      monthsWithMetric: groc?.monthsWithMetric ?? null,
+      monthsManagerBlocked: groc?.monthsManagerBlocked ?? null,
+      monthsNoneQualified: groc?.monthsNoneQualified ?? null,
     };
   }).sort((a, b) => b.totalIncentive - a.totalIncentive);
 
@@ -486,6 +562,76 @@ async function getStoreDetail(params: Params) {
       });
   }
 
+  // Phase 6.1 — Grocery HR Sales pilot. Pull monthly metrics + per-employee
+  // monthly inputs for this store across the period, so the admin
+  // drilldown can render the slab/quality/attendance trail.
+  let monthlyMetrics: Array<{
+    periodStart: string;
+    periodEnd: string;
+    salesBudgetRsLacs: number | null;
+    salesActualRsLacs: number | null;
+    salesAchievementPct: number | null;
+    salesBucket: string | null;
+    mysteryShopperRating: string | null;
+    popComplianceRating: string | null;
+    salesStatus: string | null;
+    note: string | null;
+  }> = [];
+  let employeeMonthlyInputs: Record<string, Array<{
+    periodStart: string;
+    attendance: number;
+    awlDays: number;
+    workingDays: number;
+    rilIncentiveSlab: number | null;
+    rilFinalPay: number | null;
+  }>> = {};
+  if (store.vertical === "GROCERY") {
+    const [smm, emi] = await Promise.all([
+      db.storeMonthlyMetric.findMany({
+        where: {
+          storeCode: store.storeCode,
+          vertical: "GROCERY",
+          periodStart: { gte: params.periodStart, lte: params.periodEnd },
+        },
+        orderBy: { periodStart: "asc" },
+      }),
+      db.employeeMonthlyInput.findMany({
+        where: {
+          employee: { storeCode: store.storeCode },
+          periodStart: { gte: params.periodStart, lte: params.periodEnd },
+        },
+        orderBy: { periodStart: "asc" },
+      }),
+    ]);
+    monthlyMetrics = smm.map((m) => ({
+      periodStart: m.periodStart.toISOString().slice(0, 10),
+      periodEnd: m.periodEnd.toISOString().slice(0, 10),
+      salesBudgetRsLacs: m.salesBudgetRsLacs ? asNumber(m.salesBudgetRsLacs) : null,
+      salesActualRsLacs: m.salesActualRsLacs ? asNumber(m.salesActualRsLacs) : null,
+      salesAchievementPct: m.salesAchievementPct ? asNumber(m.salesAchievementPct) : null,
+      salesBucket: m.salesBucket,
+      mysteryShopperRating: m.mysteryShopperRating,
+      popComplianceRating: m.popComplianceRating,
+      salesStatus: m.salesStatus,
+      note: m.note,
+    }));
+    const grouped: typeof employeeMonthlyInputs = {};
+    for (const e of emi) {
+      const key = e.employeeId;
+      const list = grouped[key] ?? [];
+      list.push({
+        periodStart: e.periodStart.toISOString().slice(0, 10),
+        attendance: e.attendance,
+        awlDays: e.awlDays,
+        workingDays: e.workingDays,
+        rilIncentiveSlab: e.rilIncentiveSlab ? asNumber(e.rilIncentiveSlab) : null,
+        rilFinalPay: e.rilFinalPay ? asNumber(e.rilFinalPay) : null,
+      });
+      grouped[key] = list;
+    }
+    employeeMonthlyInputs = grouped;
+  }
+
   return {
     level: "storeDetail" as const,
     summary: {
@@ -522,6 +668,12 @@ async function getStoreDetail(params: Params) {
     departments,
     employees,
     ...(weekPayouts.length > 0 && { weekPayouts }),
+    // Phase 6.1 — Grocery HR Sales pilot. Empty arrays for non-Grocery
+    // stores. Admin UI can render a "Monthly metrics" tab when
+    // `monthlyMetrics.length > 0` and an "Attendance" sub-section per
+    // employee when that employee has rows in `employeeMonthlyInputs`.
+    ...(monthlyMetrics.length > 0 && { monthlyMetrics }),
+    ...(Object.keys(employeeMonthlyInputs).length > 0 && { employeeMonthlyInputs }),
   };
 }
 

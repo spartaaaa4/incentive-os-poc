@@ -3,7 +3,10 @@ import {
   AttendanceStatus,
   CalcRunTrigger,
   EmployeeRole,
+  FormatTier,
+  GroceryRoleBucket,
   PayrollStatus,
+  StoreSalesStatus,
   TransactionType,
   Vertical,
 } from "@prisma/client";
@@ -98,13 +101,18 @@ type StoreMetadata = {
   city: string;
   state: string;
   storeName: string;
+  /// Phase 6.1 — needed by the Grocery HR Sales engine to resolve the
+  /// store's slab tier (LARGE_FORMAT vs STORES). Cheap to include in the
+  /// metadata fetch (already pulling per-store rows) so we avoid a second
+  /// query inside the per-employee loop.
+  storeFormat: string;
 };
 
 async function storeMetaFor(storeCodes: string[]): Promise<Map<string, StoreMetadata>> {
   if (!storeCodes.length) return new Map();
   const rows = await db.storeMaster.findMany({
     where: { storeCode: { in: storeCodes } },
-    select: { storeCode: true, city: true, state: true, storeName: true },
+    select: { storeCode: true, city: true, state: true, storeName: true, storeFormat: true },
   });
   return new Map(rows.map((r) => [r.storeCode, r]));
 }
@@ -702,6 +710,741 @@ async function computeGrocery(input: RecalculateInput): Promise<void> {
   }
 }
 
+// ──────────── Grocery — HR Sales (Phase 6.1) ────────────
+
+/**
+ * Grocery format-tier mapping. RIL's slab matrix has two distinct tables:
+ *
+ *   - LARGE_FORMAT: FreshPik only (high-AOV "Premium" stores).
+ *   - STORES:       Smart family (Smart, Smart Bazaar, Smart Point, gofresh).
+ *
+ * `StoreMaster.storeFormat` is free-text; we normalise via this map. Any
+ * unmapped format defaults to STORES (the more common case) — ops will see
+ * the store earning at Stores rates and can flag if a new format appears.
+ *
+ * The map keys are normalised lowercase to absorb the casing variation we
+ * already see in the .xlsb ("FreshPik", "Smart Bazaar", "gofresh", "SMART").
+ */
+const GROCERY_FORMAT_TIER: Record<string, FormatTier> = {
+  "freshpik": FormatTier.LARGE_FORMAT,
+  "smart": FormatTier.STORES,
+  "smart bazaar": FormatTier.STORES,
+  "smart point": FormatTier.STORES,
+  "gofresh": FormatTier.STORES,
+};
+function formatTierFor(storeFormat: string | null | undefined): FormatTier {
+  const key = (storeFormat ?? "").trim().toLowerCase();
+  return GROCERY_FORMAT_TIER[key] ?? FormatTier.STORES;
+}
+
+/**
+ * Map (EmployeeRole, FormatTier) to a slab role-bucket.
+ *
+ * Stores tier has 5 distinct buckets (SM / ASM / OTHER_MGRL / CSA / PT).
+ * Large tier collapses to 3 (SM_ASM combined / OTHER_MGRL / ASSOCIATES
+ * combined). DM is "Other Managerial" in both. OMNI routes through CSA on
+ * the Stores tier (same rule as F&L pilot — RIL hasn't published OMNI/PT
+ * differentiation for Grocery, route through associates by default).
+ *
+ * Returns null for roles that aren't in the policy at all (BA on Grocery
+ * — currently we don't have a Grocery-BA path; engine emits
+ * ROLE_NOT_ELIGIBLE_FOR_INCENTIVE upstream).
+ */
+function roleBucketFor(
+  role: EmployeeRole,
+  tier: FormatTier,
+): GroceryRoleBucket | null {
+  if (tier === FormatTier.LARGE_FORMAT) {
+    if (role === EmployeeRole.SM || role === EmployeeRole.ASM) return GroceryRoleBucket.SM_ASM;
+    if (role === EmployeeRole.DM) return GroceryRoleBucket.OTHER_MGRL;
+    if (role === EmployeeRole.SA || role === EmployeeRole.OMNI || role === EmployeeRole.PT) {
+      return GroceryRoleBucket.ASSOCIATES;
+    }
+    return null;
+  }
+  // STORES tier
+  if (role === EmployeeRole.SM) return GroceryRoleBucket.SM;
+  if (role === EmployeeRole.ASM) return GroceryRoleBucket.ASM;
+  if (role === EmployeeRole.DM) return GroceryRoleBucket.OTHER_MGRL;
+  if (role === EmployeeRole.SA || role === EmployeeRole.OMNI) return GroceryRoleBucket.CSA;
+  if (role === EmployeeRole.PT) return GroceryRoleBucket.PT;
+  return null;
+}
+
+/** Buckets that a "manager" rating-degraded gate blocks. */
+const MANAGER_BUCKETS = new Set<GroceryRoleBucket>([
+  GroceryRoleBucket.SM,
+  GroceryRoleBucket.ASM,
+  GroceryRoleBucket.OTHER_MGRL,
+  GroceryRoleBucket.SM_ASM,
+]);
+
+/**
+ * Walk the slab matrix and find the row whose [bandMinPct, bandMaxPct)
+ * range contains the achievement %. Bands are stored as decimal fractions
+ * (0.85 = 85%), achievement is a fraction too (1.10 = 110%). NULL
+ * bandMaxPct = +infinity. Returns 0 if no band matches (which is the
+ * correct semantic — the "below floor" bucket pays zero).
+ */
+function findSlabAmount(
+  slabs: Array<{
+    formatTier: FormatTier;
+    roleBucket: GroceryRoleBucket;
+    bandMinPct: unknown;
+    bandMaxPct: unknown;
+    amountRs: unknown;
+  }>,
+  tier: FormatTier,
+  bucket: GroceryRoleBucket,
+  achievementFrac: number,
+): number {
+  const matches = slabs.filter((s) => s.formatTier === tier && s.roleBucket === bucket);
+  for (const s of matches) {
+    const min = asNumber(s.bandMinPct);
+    const max = s.bandMaxPct === null || s.bandMaxPct === undefined ? Infinity : asNumber(s.bandMaxPct);
+    if (achievementFrac >= min && achievementFrac < max) {
+      return asNumber(s.amountRs);
+    }
+  }
+  return 0;
+}
+
+/**
+ * Compute Grocery HR Sales payouts.
+ *
+ * Reads plans where `config.mode === "HR_SALES"`. For each in-scope store
+ * × period (intersected with the plan's effective range):
+ *
+ *   1. Read StoreMonthlyMetric for the (store, periodStart). If absent,
+ *      skip the store (no input → no payout, ops will chase the feed).
+ *   2. For each employee in the store: derive (formatTier, roleBucket),
+ *      look up slab amount in `GrocerySalesSlab`, apply gates:
+ *
+ *        - BELOW_MIN_ACHIEVEMENT (BLOCKING): slab amount is 0 because the
+ *          store didn't clear the lowest payable band.
+ *        - QUALITY_GATE_FAILED_FULL (BLOCKING): salesStatus =
+ *          NONE_QUALIFIED. Nobody earns.
+ *        - QUALITY_GATE_FAILED_PARTIAL (BLOCKING for managers only):
+ *          salesStatus = ONLY_ASSOCIATES_QUALIFIED. Engine emits the reason
+ *          only on manager rows; CSA/PT keep their slab.
+ *        - ROLE_NOT_ELIGIBLE_FOR_INCENTIVE (BLOCKING): roleBucket is null
+ *          (e.g., a BA somehow showing up in a Grocery store).
+ *
+ *   3. Apply attendance pro-rata: `final = slab × workingDays / attendance`.
+ *      Pulled from EmployeeMonthlyInput. If absent, emit
+ *      MONTHLY_INPUT_MISSING (WARNING) and apply a default (workingDays =
+ *      attendance = days_in_period) so the row pays the slab in full —
+ *      the assumption is "we got store-level metric but missed the
+ *      employee-level feed; default to fully-attended rather than zero".
+ */
+async function computeGroceryHrSales(input: RecalculateInput): Promise<void> {
+  const plans = await db.incentivePlan.findMany({
+    where: {
+      vertical: Vertical.GROCERY,
+      status: "ACTIVE",
+    },
+    include: { grocerySalesSlabs: true },
+  });
+  // Filter to HR_SALES mode plans (config.mode discriminator). We do this
+  // post-fetch rather than in the SQL where-clause because Prisma's JSON
+  // path filtering needs the raw column name and we want to keep this in
+  // TypeScript for clarity.
+  const hrPlans = plans.filter((p) => {
+    const cfg = (p.config ?? {}) as Record<string, unknown>;
+    return cfg.mode === "HR_SALES";
+  });
+  if (!hrPlans.length) return;
+
+  const storeMeta = await storeMetaFor(input.storeCodes);
+
+  for (const plan of hrPlans) {
+    // Plan-level effective window intersect with input span.
+    const planFrom = plan.effectiveFrom ?? input.periodStart;
+    const planTo = plan.effectiveTo ?? input.periodEnd;
+    const periodStart = planFrom > input.periodStart ? planFrom : input.periodStart;
+    const periodEnd = planTo < input.periodEnd ? planTo : input.periodEnd;
+    if (periodEnd < periodStart) continue;
+
+    // Read all store-month metrics in scope. Single query, scoped to
+    // input stores + this plan's window.
+    const metrics = await db.storeMonthlyMetric.findMany({
+      where: {
+        vertical: Vertical.GROCERY,
+        storeCode: { in: input.storeCodes },
+        periodStart: { gte: periodStart, lte: periodEnd },
+      },
+    });
+    if (!metrics.length) continue;
+
+    // Group metrics by month so each runCalculation covers one (plan,
+    // periodStart) pair — keeps CalculationRun rows clean.
+    const metricsByPeriod = new Map<string, typeof metrics>();
+    for (const m of metrics) {
+      const key = `${m.periodStart.toISOString().slice(0, 10)}|${m.periodEnd.toISOString().slice(0, 10)}`;
+      const list = metricsByPeriod.get(key) ?? [];
+      list.push(m);
+      metricsByPeriod.set(key, list);
+    }
+
+    for (const [, monthMetrics] of metricsByPeriod) {
+      const monthStart = monthMetrics[0].periodStart;
+      const monthEnd = monthMetrics[0].periodEnd;
+      const monthStores = monthMetrics.map((m) => m.storeCode);
+      const daysInPeriod =
+        Math.round((monthEnd.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+      await runCalculation(
+        {
+          planId: plan.id,
+          planVersion: plan.version,
+          vertical: Vertical.GROCERY,
+          periodStart: monthStart,
+          periodEnd: monthEnd,
+          scopeStoreCodes: monthStores,
+          trigger: input.trigger ?? CalcRunTrigger.MANUAL_RECOMPUTE,
+          triggeredByUserId: input.triggeredByUserId ?? null,
+        },
+        async () => {
+          const ledgerRows: LedgerRowInput[] = [];
+          const employeeRollups: CalculationOutput["employeeRollups"] = [];
+          const storeRollups: CalculationOutput["storeRollups"] = [];
+
+          // Pull all the day-level txns for the daily rollup so the dashboard
+          // still has the trend even on stores with no payout.
+          const allMonthTxns = await db.salesTransaction.findMany({
+            where: {
+              storeCode: { in: monthStores },
+              vertical: Vertical.GROCERY,
+              transactionDate: { gte: monthStart, lte: monthEnd },
+            },
+            select: { storeCode: true, vertical: true, transactionDate: true, grossAmount: true, taxAmount: true, quantity: true },
+          });
+
+          // Pull all employees and monthly inputs in one shot.
+          const allEmployees = await db.employeeMaster.findMany({
+            where: {
+              storeCode: { in: monthStores },
+              payrollStatus: {
+                in: [PayrollStatus.ACTIVE, PayrollStatus.NOTICE_PERIOD, PayrollStatus.DISCIPLINARY_ACTION],
+              },
+            },
+          });
+          const allMonthlyInputs = await db.employeeMonthlyInput.findMany({
+            where: {
+              employeeId: { in: allEmployees.map((e) => e.employeeId) },
+              periodStart: monthStart,
+            },
+          });
+          const inputByEmp = new Map(allMonthlyInputs.map((i) => [i.employeeId, i]));
+          const empsByStore = new Map<string, typeof allEmployees>();
+          for (const e of allEmployees) {
+            const list = empsByStore.get(e.storeCode) ?? [];
+            list.push(e);
+            empsByStore.set(e.storeCode, list);
+          }
+
+          for (const metric of monthMetrics) {
+            const meta = storeMeta.get(metric.storeCode);
+            if (!meta) continue;
+
+            const tier = formatTierFor(meta.storeFormat);
+            const ach = metric.salesAchievementPct ? asNumber(metric.salesAchievementPct) : 0;
+            const status = metric.salesStatus;
+            // achievement is stored as decimal fraction (1.10 = 110%); the slab
+            // bands are also fractions, so they compare directly.
+            const achFrac = ach;
+
+            const employees = empsByStore.get(metric.storeCode) ?? [];
+            let storeEarning = 0;
+            let storeEarners = 0;
+
+            for (const employee of employees) {
+              const isActive = employee.payrollStatus === PayrollStatus.ACTIVE;
+              const reasons: EligibilityReason[] = [];
+
+              if (employee.payrollStatus === PayrollStatus.NOTICE_PERIOD) {
+                reasons.push(makeReason(
+                  "NOTICE_PERIOD",
+                  "On notice — not eligible for incentive payout this month.",
+                  { payrollStatus: employee.payrollStatus },
+                ));
+              }
+              if (employee.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION) {
+                reasons.push(makeReason(
+                  "DISCIPLINARY_ACTION",
+                  "Under disciplinary action — incentive on hold for this month.",
+                  { payrollStatus: employee.payrollStatus },
+                ));
+              }
+
+              const bucket = roleBucketFor(employee.role, tier);
+              if (!bucket) {
+                reasons.push(makeReason(
+                  "ROLE_NOT_ELIGIBLE_FOR_INCENTIVE",
+                  `Role ${employee.role} not in the Grocery HR Sales policy for ${tier} stores.`,
+                  { role: employee.role, formatTier: tier },
+                ));
+              }
+
+              const slabAmount = bucket
+                ? findSlabAmount(plan.grocerySalesSlabs, tier, bucket, achFrac)
+                : 0;
+
+              // Gate 1 — Below min achievement. The slab table itself
+              // encodes a 0-amount row for the floor band, but we surface
+              // the reason explicitly so the mobile app can render "hit
+              // 95% to unlock" rather than a silent ₹0.
+              if (bucket && slabAmount === 0 && achFrac > 0) {
+                const floor = tier === FormatTier.LARGE_FORMAT ? 0.85 : 0.95;
+                reasons.push(makeReason(
+                  "BELOW_MIN_ACHIEVEMENT",
+                  `Store at ${(achFrac * 100).toFixed(1)}% — minimum ${(floor * 100).toFixed(0)}% needed for any payout.`,
+                  { achievementPct: achFrac, floorPct: floor, formatTier: tier },
+                ));
+              }
+
+              // Gate 2 — Quality gate. FULL blocks everyone; PARTIAL only
+              // blocks managers.
+              const isManager = bucket ? MANAGER_BUCKETS.has(bucket) : false;
+              if (status === StoreSalesStatus.NONE_QUALIFIED) {
+                reasons.push(makeReason(
+                  "QUALITY_GATE_FAILED_FULL",
+                  "Store quality gate failed — no incentive this month.",
+                  {
+                    salesStatus: status,
+                    mysteryShopper: metric.mysteryShopperRating,
+                    popCompliance: metric.popComplianceRating,
+                  },
+                ));
+              } else if (status === StoreSalesStatus.ONLY_ASSOCIATES_QUALIFIED && isManager) {
+                reasons.push(makeReason(
+                  "QUALITY_GATE_FAILED_PARTIAL",
+                  "Store quality ratings degraded — manager incentive blocked. Associates still earn.",
+                  {
+                    salesStatus: status,
+                    mysteryShopper: metric.mysteryShopperRating,
+                    popCompliance: metric.popComplianceRating,
+                  },
+                ));
+              }
+
+              // Attendance pro-rata. EmployeeMonthlyInput is canonical;
+              // missing row → default to fully attended + WARNING.
+              const monthlyInput = inputByEmp.get(employee.employeeId) ?? null;
+              const attendance = monthlyInput?.attendance ?? daysInPeriod;
+              const workingDays = monthlyInput?.workingDays ?? daysInPeriod;
+              if (!monthlyInput && bucket) {
+                reasons.push(makeReason(
+                  "MONTHLY_INPUT_MISSING",
+                  "No monthly attendance row found — defaulted to fully attended. Ops should verify.",
+                  { defaultedAttendance: attendance, defaultedWorkingDays: workingDays },
+                ));
+              }
+
+              // Compute final amount. ALL blocking reasons collapse to 0;
+              // active + role + slab > 0 + no quality block → pro-rata
+              // payout. We re-collect the blocking decision here rather
+              // than peeking at reasons[].severity so the math is local
+              // and easy to follow.
+              const qualityBlocks =
+                status === StoreSalesStatus.NONE_QUALIFIED ||
+                (status === StoreSalesStatus.ONLY_ASSOCIATES_QUALIFIED && isManager);
+              let finalAmount = 0;
+              if (
+                isActive &&
+                bucket &&
+                slabAmount > 0 &&
+                !qualityBlocks
+              ) {
+                finalAmount = attendance > 0
+                  ? Math.round((slabAmount * workingDays / attendance) * 100) / 100
+                  : 0;
+              }
+
+              if (finalAmount > 0) {
+                storeEarning += finalAmount;
+                storeEarners += 1;
+              }
+
+              ledgerRows.push({
+                planId: plan.id,
+                employeeId: employee.employeeId,
+                storeCode: metric.storeCode,
+                vertical: Vertical.GROCERY,
+                periodStart: monthStart,
+                periodEnd: monthEnd,
+                baseIncentive: slabAmount,
+                finalIncentive: finalAmount,
+                achievementPct: achFrac * 100,
+                calculationDetails: {
+                  mode: "HR_SALES",
+                  formatTier: tier,
+                  roleBucket: bucket ?? null,
+                  slabAmount,
+                  attendance,
+                  awlDays: monthlyInput?.awlDays ?? 0,
+                  workingDays,
+                  salesAchievementPct: achFrac,
+                  salesBucket: metric.salesBucket ?? null,
+                  salesBudgetRsLacs: metric.salesBudgetRsLacs ? asNumber(metric.salesBudgetRsLacs) : null,
+                  salesActualRsLacs: metric.salesActualRsLacs ? asNumber(metric.salesActualRsLacs) : null,
+                  mysteryShopperRating: metric.mysteryShopperRating,
+                  popComplianceRating: metric.popComplianceRating,
+                  salesStatus: status,
+                  // Reconciliation hooks — RIL's pre-computed values from
+                  // the working file, surfaced for the diff script.
+                  rilIncentiveSlab: monthlyInput?.rilIncentiveSlab
+                    ? asNumber(monthlyInput.rilIncentiveSlab)
+                    : null,
+                  rilFinalPay: monthlyInput?.rilFinalPay
+                    ? asNumber(monthlyInput.rilFinalPay)
+                    : null,
+                  payrollStatus: employee.payrollStatus,
+                  reasons,
+                },
+              });
+
+              employeeRollups.push({
+                employeeId: employee.employeeId,
+                planId: plan.id,
+                storeCode: metric.storeCode,
+                vertical: Vertical.GROCERY,
+                periodStart: monthStart,
+                periodEnd: monthEnd,
+                earned: finalAmount,
+                eligible: finalAmount,
+                potential: bucket
+                  ? findSlabAmount(plan.grocerySalesSlabs, tier, bucket, 999)
+                  : 0,
+                achievementPct: achFrac * 100,
+                multiplierApplied: null,
+              });
+            }
+
+            storeRollups.push({
+              storeCode: metric.storeCode,
+              planId: plan.id,
+              vertical: Vertical.GROCERY,
+              city: meta.city,
+              state: meta.state,
+              periodStart: monthStart,
+              periodEnd: monthEnd,
+              targetValue: metric.salesBudgetRsLacs
+                ? asNumber(metric.salesBudgetRsLacs) * 100000
+                : 0,
+              actualSales: metric.salesActualRsLacs
+                ? asNumber(metric.salesActualRsLacs) * 100000
+                : 0,
+              achievementPct: Math.round(achFrac * 100 * 100) / 100,
+              totalIncentive: storeEarning,
+              employeeCount: employees.length,
+              earningCount: storeEarners,
+            });
+          }
+
+          return {
+            ledgerRows,
+            employeeRollups,
+            storeRollups,
+            dailyRollups: dailyRollupsFrom(allMonthTxns),
+          };
+        },
+      );
+    }
+  }
+}
+
+// ──────────── Grocery — Category PIP (Phase 6.1) ────────────
+
+/**
+ * Compute Grocery Category PIP (Per-Piece Incentive) payouts.
+ *
+ * Reads plans where `config.mode === "CATEGORY_PIP"`. For each such plan,
+ * matches `SalesTransaction.articleCode` to `CategoryPipArticle` rows,
+ * computes per-store-period totals, and distributes per the plan's
+ * `pipAttribution` config:
+ *
+ *   - "EQUAL_CSA"            (DEFAULT): split across all CSA-pool roles
+ *                            (SA + OMNI + PT) in the store.
+ *   - "EQUAL_ALL_EMPLOYEES":  split across all active employees.
+ *   - "STORE_LEVEL_DM_DRIVEN": entire pool to DM (department lead earns
+ *                            the campaign — manager-driven attribution).
+ *
+ * The default is EQUAL_CSA because the Mar'26 Ice Cream PIP file doesn't
+ * specify attribution and Rupali (RIL Grocery) confirmed associates are
+ * the primary earners on similar PIP campaigns. Flip via plan.config.
+ *
+ * Per-article gating: payout = `qty × rateRs` if `qty >= targetQty ×
+ * minCriteriaPct`, else 0. The threshold is per-article (a store can
+ * qualify on some SKUs, fail on others) and aggregated to a store total.
+ */
+async function computeGroceryCategoryPip(input: RecalculateInput): Promise<void> {
+  const plans = await db.incentivePlan.findMany({
+    where: {
+      vertical: Vertical.GROCERY,
+      status: "ACTIVE",
+    },
+    include: { categoryPipArticles: true },
+  });
+  const pipPlans = plans.filter((p) => {
+    const cfg = (p.config ?? {}) as Record<string, unknown>;
+    return cfg.mode === "CATEGORY_PIP";
+  });
+  if (!pipPlans.length) return;
+
+  const storeMeta = await storeMetaFor(input.storeCodes);
+
+  for (const plan of pipPlans) {
+    if (!plan.categoryPipArticles.length) continue;
+
+    const planFrom = plan.effectiveFrom ?? input.periodStart;
+    const planTo = plan.effectiveTo ?? input.periodEnd;
+    const periodStart = planFrom > input.periodStart ? planFrom : input.periodStart;
+    const periodEnd = planTo < input.periodEnd ? planTo : input.periodEnd;
+    if (periodEnd < periodStart) continue;
+
+    const cfg = (plan.config ?? {}) as Record<string, unknown>;
+    const attribution = (cfg.pipAttribution as string) ?? "EQUAL_CSA";
+
+    const articleSet = new Set(plan.categoryPipArticles.map((a) => a.articleCode));
+    const articleByCode = new Map(plan.categoryPipArticles.map((a) => [a.articleCode, a]));
+
+    await runCalculation(
+      {
+        planId: plan.id,
+        planVersion: plan.version,
+        vertical: Vertical.GROCERY,
+        periodStart,
+        periodEnd,
+        scopeStoreCodes: input.storeCodes,
+        trigger: input.trigger ?? CalcRunTrigger.MANUAL_RECOMPUTE,
+        triggeredByUserId: input.triggeredByUserId ?? null,
+      },
+      async () => {
+        const ledgerRows: LedgerRowInput[] = [];
+        const employeeRollups: CalculationOutput["employeeRollups"] = [];
+        const storeRollups: CalculationOutput["storeRollups"] = [];
+
+        // Single batched txn read for all in-scope stores. Cap at the
+        // plan-effective window; the .xlsb plan has Both online/offline
+        // so we don't filter on channel.
+        const allTxns = await db.salesTransaction.findMany({
+          where: {
+            storeCode: { in: input.storeCodes },
+            vertical: Vertical.GROCERY,
+            transactionDate: { gte: periodStart, lte: periodEnd },
+            articleCode: { in: [...articleSet] },
+          },
+          select: { storeCode: true, vertical: true, transactionDate: true, grossAmount: true, taxAmount: true, quantity: true, articleCode: true },
+        });
+        const txnsByStore = new Map<string, typeof allTxns>();
+        for (const t of allTxns) {
+          const list = txnsByStore.get(t.storeCode) ?? [];
+          list.push(t);
+          txnsByStore.set(t.storeCode, list);
+        }
+
+        const allEmployees = await db.employeeMaster.findMany({
+          where: {
+            storeCode: { in: input.storeCodes },
+            payrollStatus: {
+              in: [PayrollStatus.ACTIVE, PayrollStatus.NOTICE_PERIOD, PayrollStatus.DISCIPLINARY_ACTION],
+            },
+          },
+        });
+        const empsByStore = new Map<string, typeof allEmployees>();
+        for (const e of allEmployees) {
+          const list = empsByStore.get(e.storeCode) ?? [];
+          list.push(e);
+          empsByStore.set(e.storeCode, list);
+        }
+
+        for (const storeCode of input.storeCodes) {
+          const meta = storeMeta.get(storeCode);
+          if (!meta) continue;
+          const txns = txnsByStore.get(storeCode) ?? [];
+          const employees = empsByStore.get(storeCode) ?? [];
+
+          // Per-article aggregates.
+          const qtyByArticle = new Map<string, number>();
+          for (const t of txns) {
+            qtyByArticle.set(t.articleCode, (qtyByArticle.get(t.articleCode) ?? 0) + t.quantity);
+          }
+
+          // For each article in the plan: gate + payout.
+          let storePool = 0;
+          let storePotential = 0;
+          const perArticleBreakdown: Array<{
+            articleCode: string;
+            qty: number;
+            targetQty: number;
+            minQty: number;
+            rateRs: number;
+            qualifies: boolean;
+            payout: number;
+          }> = [];
+          for (const article of plan.categoryPipArticles) {
+            const qty = qtyByArticle.get(article.articleCode) ?? 0;
+            const targetQty = article.targetQty;
+            const minQty = Math.ceil(targetQty * asNumber(article.minCriteriaPct));
+            const rateRs = asNumber(article.rateRs);
+            const qualifies = qty >= minQty;
+            const payout = qualifies ? qty * rateRs : 0;
+            storePool += payout;
+            storePotential += targetQty * rateRs; // upper bound for "potential"
+            perArticleBreakdown.push({
+              articleCode: article.articleCode,
+              qty,
+              targetQty,
+              minQty,
+              rateRs,
+              qualifies,
+              payout,
+            });
+          }
+
+          // Determine attribution group for this store.
+          let earners: typeof employees;
+          if (attribution === "STORE_LEVEL_DM_DRIVEN") {
+            earners = employees.filter(
+              (e) => e.payrollStatus === PayrollStatus.ACTIVE && e.role === EmployeeRole.DM,
+            );
+          } else if (attribution === "EQUAL_ALL_EMPLOYEES") {
+            earners = employees.filter((e) => e.payrollStatus === PayrollStatus.ACTIVE);
+          } else {
+            // Default: EQUAL_CSA — split across CSA-pool roles.
+            earners = employees.filter(
+              (e) =>
+                e.payrollStatus === PayrollStatus.ACTIVE &&
+                (e.role === EmployeeRole.SA || e.role === EmployeeRole.OMNI || e.role === EmployeeRole.PT),
+            );
+          }
+
+          const perEarner = earners.length > 0 ? storePool / earners.length : 0;
+          const perEarnerPotential = earners.length > 0 ? storePotential / earners.length : 0;
+
+          // Emit a row per active employee (and NP/DA — needs a "why ₹0"
+          // surface). Earners get the share; non-earners get 0 + reason.
+          let storeEarning = 0;
+          let storeEarners = 0;
+          for (const employee of employees) {
+            const isActive = employee.payrollStatus === PayrollStatus.ACTIVE;
+            const isAttributed = earners.some((er) => er.employeeId === employee.employeeId);
+            const reasons: EligibilityReason[] = [];
+
+            if (employee.payrollStatus === PayrollStatus.NOTICE_PERIOD) {
+              reasons.push(makeReason(
+                "NOTICE_PERIOD",
+                "On notice — not eligible for the campaign payout.",
+                { payrollStatus: employee.payrollStatus },
+              ));
+            }
+            if (employee.payrollStatus === PayrollStatus.DISCIPLINARY_ACTION) {
+              reasons.push(makeReason(
+                "DISCIPLINARY_ACTION",
+                "Under disciplinary action — campaign payout on hold.",
+                { payrollStatus: employee.payrollStatus },
+              ));
+            }
+
+            // Role-eligibility for this attribution rule.
+            if (isActive && !isAttributed) {
+              reasons.push(makeReason(
+                "ROLE_NOT_ELIGIBLE_FOR_INCENTIVE",
+                `Role ${employee.role} not eligible under this campaign's "${attribution}" attribution rule.`,
+                { role: employee.role, attribution },
+              ));
+            }
+
+            // Below-min-criteria reason (campaign-level summary). We emit
+            // it on every employee row so the mobile app shows the
+            // headline reason; the per-article breakdown lives in
+            // calculationDetails for drilldown.
+            if (storePool === 0 && txns.length > 0) {
+              reasons.push(makeReason(
+                "BELOW_MIN_CRITERIA",
+                "Store didn't hit the minimum quantity for any campaign article — no payout this period.",
+                { perArticle: perArticleBreakdown },
+              ));
+            } else if (txns.length === 0) {
+              reasons.push(makeReason(
+                "ARTICLES_NOT_SOLD",
+                `No qualifying article transactions in scope for this campaign.`,
+                { campaignArticles: plan.categoryPipArticles.length },
+              ));
+            }
+
+            const finalAmount = isActive && isAttributed ? Math.round(perEarner * 100) / 100 : 0;
+            if (finalAmount > 0) {
+              storeEarning += finalAmount;
+              storeEarners += 1;
+            }
+
+            ledgerRows.push({
+              planId: plan.id,
+              employeeId: employee.employeeId,
+              storeCode,
+              vertical: Vertical.GROCERY,
+              periodStart,
+              periodEnd,
+              baseIncentive: storePool,
+              finalIncentive: finalAmount,
+              achievementPct: null,
+              calculationDetails: {
+                mode: "CATEGORY_PIP",
+                attribution,
+                fundingSource: plan.fundingSource,
+                storePool,
+                earnerCount: earners.length,
+                perArticle: perArticleBreakdown,
+                payrollStatus: employee.payrollStatus,
+                reasons,
+              },
+            });
+
+            employeeRollups.push({
+              employeeId: employee.employeeId,
+              planId: plan.id,
+              storeCode,
+              vertical: Vertical.GROCERY,
+              periodStart,
+              periodEnd,
+              earned: finalAmount,
+              eligible: finalAmount,
+              potential: isActive && isAttributed ? perEarnerPotential : 0,
+              achievementPct: null,
+              multiplierApplied: null,
+            });
+          }
+
+          storeRollups.push({
+            storeCode,
+            planId: plan.id,
+            vertical: Vertical.GROCERY,
+            city: meta.city,
+            state: meta.state,
+            periodStart,
+            periodEnd,
+            targetValue: storePotential,
+            actualSales: txns.reduce((s, t) => s + asNumber(t.grossAmount), 0),
+            achievementPct: storePotential > 0 ? Math.round((storePool / storePotential) * 10000) / 100 : 0,
+            totalIncentive: storeEarning,
+            employeeCount: employees.length,
+            earningCount: storeEarners,
+          });
+        }
+
+        return {
+          ledgerRows,
+          employeeRollups,
+          storeRollups,
+          dailyRollups: dailyRollupsFrom(allTxns),
+        };
+      },
+    );
+  }
+}
+
 // ──────────── F&L ────────────
 
 /**
@@ -1224,6 +1967,11 @@ async function computeFnL(input: RecalculateInput): Promise<void> {
 export async function recalculateIncentives(input: RecalculateInput) {
   await computeElectronics(input);
   await computeGrocery(input);
+  // Phase 6.1 — Grocery pilot. Two new engine paths, both gated on plan
+  // `config.mode`. They no-op cleanly when no matching plans exist, so
+  // running them unconditionally is safe even before seeding lands.
+  await computeGroceryHrSales(input);
+  await computeGroceryCategoryPip(input);
   await computeFnL(input);
 }
 

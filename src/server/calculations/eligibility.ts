@@ -42,6 +42,25 @@ export type ReasonCode =
   | "STORE_GM_NOT_ACHIEVED"       // F&L: gross margin not met (BLOCKING for SM/DM, WARNING for CSA)
   | "LEAVE_IN_WEEK"               // F&L: any leave during incentive week (BLOCKING)
   | "ROLE_NOT_ELIGIBLE_FOR_INCENTIVE" // F&L: role outside the policy's named set (BLOCKING)
+  // Phase 6.1 — Grocery HR Sales pilot. Three new gates plus a soft
+  // "missing input" reason. The achievement gate fires when the store's
+  // sales-vs-budget falls below the lowest payable band (varies by tier:
+  // <85% for Large Format, <95% for Stores). The two quality-gate codes
+  // fire on Mystery Shopper / POP Compliance ratings — PARTIAL blocks
+  // managers only, FULL blocks everyone. MONTHLY_INPUT_MISSING is a
+  // WARNING the engine emits when EmployeeMonthlyInput is absent for a
+  // role that needs it (default-attendance applied; ops should chase the
+  // missing feed).
+  | "BELOW_MIN_ACHIEVEMENT"           // Grocery HR: sales bucket below floor (BLOCKING)
+  | "QUALITY_GATE_FAILED_PARTIAL"     // Grocery HR: ratings degraded — managers blocked (engine emits only for SM/ASM/DM)
+  | "QUALITY_GATE_FAILED_FULL"        // Grocery HR: nobody earns (BLOCKING)
+  | "MONTHLY_INPUT_MISSING"           // Grocery HR: no EmployeeMonthlyInput row (WARNING)
+  // Phase 6.1 — Grocery Category PIP. Below-min-criteria threshold is
+  // BLOCKING (no partial credit for the campaign). ARTICLES_NOT_SOLD is a
+  // WARNING used when the employee's attribution scope produced zero
+  // qualifying article transactions in the period.
+  | "BELOW_MIN_CRITERIA"              // Grocery PIP: qty sold below 80% of target (BLOCKING)
+  | "ARTICLES_NOT_SOLD"               // Grocery PIP: zero qualifying article transactions (WARNING)
   // Catch-all
   | "NO_PLAN_APPLICABLE";
 
@@ -85,6 +104,16 @@ const BLOCKING_CODES = new Set<ReasonCode>([
   "STORE_GM_NOT_ACHIEVED",
   "LEAVE_IN_WEEK",
   "ROLE_NOT_ELIGIBLE_FOR_INCENTIVE",
+  // Phase 6.1 — Grocery HR Sales / Category PIP. BELOW_MIN_ACHIEVEMENT and
+  // BELOW_MIN_CRITERIA are unconditional BLOCKING (the store / employee
+  // didn't clear the floor). QUALITY_GATE_FAILED_PARTIAL is role-conditional
+  // (engine emits it only for SM/ASM/DM); QUALITY_GATE_FAILED_FULL is
+  // unconditional. MONTHLY_INPUT_MISSING and ARTICLES_NOT_SOLD are WARNINGs
+  // — not in this set.
+  "BELOW_MIN_ACHIEVEMENT",
+  "QUALITY_GATE_FAILED_PARTIAL",
+  "QUALITY_GATE_FAILED_FULL",
+  "BELOW_MIN_CRITERIA",
 ]);
 
 export function severityFor(code: ReasonCode): ReasonSeverity {
@@ -141,7 +170,16 @@ export function buildEligibility(
     blockingCodes.has("STORE_PI_HOLD") ||
     blockingCodes.has("STORE_GM_NOT_ACHIEVED") ||
     blockingCodes.has("LEAVE_IN_WEEK") ||
-    blockingCodes.has("ROLE_NOT_ELIGIBLE_FOR_INCENTIVE");
+    blockingCodes.has("ROLE_NOT_ELIGIBLE_FOR_INCENTIVE") ||
+    // Phase 6.1: Grocery quality-gate failures are not recoverable inside
+    // the same month. Below-min-achievement *is* technically recoverable
+    // ("hit 95% to unlock") but suppress the nudge anyway — the period is
+    // the month, and by the time the employee sees this the month is
+    // closing. Below-min-criteria for PIP is suppressed for the same reason.
+    blockingCodes.has("QUALITY_GATE_FAILED_PARTIAL") ||
+    blockingCodes.has("QUALITY_GATE_FAILED_FULL") ||
+    blockingCodes.has("BELOW_MIN_ACHIEVEMENT") ||
+    blockingCodes.has("BELOW_MIN_CRITERIA");
 
   return {
     status,

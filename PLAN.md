@@ -351,6 +351,167 @@ seeding-data pass to wire up actual W1 data is a separate task.
 - Format filter on admin store list — JSON contract is ready
   (`storeFormat` already on rows); UI control is a small next step.
 
+### Phase 6.1 — Grocery pilot scope (HR Sales + Category PIP, eff. Mar 2026)
+
+RIL Grocery sent two files alongside the F&L feeds — `Sales Incentive
+Input working file-March'26.xlsb` (4,372 employees, 144 stores, 5 formats)
+and `Ice Cream incentive (1).xlsx` (vendor-funded PPI campaign across 5
+stores, 17 SKUs). Both are NEW plan shapes, not just data — our existing
+`GROCERY` engine handles per-piece campaigns only. Track 2 ships HR Sales
+fully pilot-ready; Track 3 ships Category PIP schema + engine. Seeding
+is deferred to Phase 7.
+
+**Schema (6.1)**
+
+- `EmployeeRole` extended with `ASM` (Assistant Store Manager) — RIL's
+  Stores-tier slab matrix has SM and ASM as distinct columns with
+  identical v1 amounts, but the policy keeps them separate.
+- New enums: `FormatTier` (LARGE_FORMAT / STORES), `GroceryRoleBucket`
+  (SM / ASM / OTHER_MGRL / CSA / PT / SM_ASM / ASSOCIATES — covers both
+  tiers), `StoreRating` (GREEN / AMBER / RED), `StoreSalesStatus`
+  (ALL_STAFF / ONLY_ASSOCIATES / NONE), `FundingSource` (RIL / VENDOR).
+- `IncentivePlan.fundingSource` column added — defaults to RIL,
+  preserving backward-compat. Affects approval flow + ledger labelling.
+- New `StoreMonthlyMetric` table — one row per (store, vertical,
+  periodStart). Carries sales budget/actual in Rs Lacs (RIL's unit),
+  computed achievement %, the band label, both quality ratings, and the
+  canonical `salesStatus`. Status is computed at ingest from the two
+  ratings (any RED → NONE_QUALIFIED, any AMBER → ONLY_ASSOCIATES,
+  otherwise ALL_STAFF) but stored so ops can override.
+- New `EmployeeMonthlyInput` table — per (employee, month). Carries
+  attendance / awlDays / workingDays for pro-rata math, plus
+  `rilIncentiveSlab` and `rilFinalPay` reconciliation hooks (RIL's
+  pre-computed values from the working file — engine doesn't read them,
+  reconciliation script does).
+- New `GrocerySalesSlab` table — per (planId, formatTier, roleBucket,
+  bandMinPct). Bands stored as decimal fractions in half-open intervals
+  ([0.85, 0.95), etc.). The matrix shape (band count, bucket count) is
+  data, not code — a v2 policy can be re-seeded without engine churn.
+- New `CategoryPipArticle` table — per (planId, articleCode). Carries
+  `rateRs` (per-piece in Rs), `targetQty`, `minCriteriaPct` (default
+  0.80). Engine matches against `SalesTransaction.articleCode`; no new
+  ingest needed for the campaign sales.
+- Six new BLOCKING/WARNING ReasonCodes added to `eligibility.ts`:
+  `BELOW_MIN_ACHIEVEMENT`, `QUALITY_GATE_FAILED_PARTIAL` (manager-only
+  block), `QUALITY_GATE_FAILED_FULL`, `MONTHLY_INPUT_MISSING` (warning),
+  `BELOW_MIN_CRITERIA`, `ARTICLES_NOT_SOLD` (warning). All
+  blocking codes added to `nudgeNeverHelps` so "reach 95% to unlock"
+  nudges are suppressed inside a closing month.
+- Migration: `prisma/migrations/20260428100000_phase_6_1_grocery_pilot_scope/`.
+
+**Engine (6.1) — Grocery HR Sales (`engines.ts:705+` `computeGroceryHrSales`)**
+
+- Resolves plans by (vertical=GROCERY, status=ACTIVE) filtered to
+  `config.mode === "HR_SALES"`. Multiple HR Sales plans can coexist
+  (e.g., regional variants); engine runs each against the input scope.
+- Format-tier per store via `formatTierFor(storeFormat)` — constant map
+  matching the .xlsb formats (FreshPik → LARGE_FORMAT, Smart family →
+  STORES). Unmapped formats default to STORES.
+- Role-bucket per (employeeRole, formatTier) via `roleBucketFor()` —
+  Stores tier has 5 buckets, Large tier collapses to 3 (SM_ASM and
+  ASSOCIATES). DM is OTHER_MGRL in both. OMNI routes to CSA (same default
+  as F&L pilot).
+- Slab lookup walks `[bandMinPct, bandMaxPct)` half-open intervals
+  against `salesAchievementPct`; NULL `bandMaxPct` = +∞ for the top band.
+  No-match returns 0 (the implicit floor band).
+- Three gates emit reasons:
+  - `BELOW_MIN_ACHIEVEMENT` (BLOCKING) — slab is 0 because the store
+    didn't clear the lowest payable band.
+  - `QUALITY_GATE_FAILED_FULL` (BLOCKING) — `salesStatus = NONE_QUALIFIED`.
+  - `QUALITY_GATE_FAILED_PARTIAL` (BLOCKING for managers) —
+    `salesStatus = ONLY_ASSOCIATES_QUALIFIED`. Engine emits this only
+    on SM/ASM/DM/SM_ASM rows; CSA/PT keep their slab.
+- Attendance pro-rata: `final = slab × workingDays / attendance`. When
+  `EmployeeMonthlyInput` is missing, defaults to fully-attended +
+  `MONTHLY_INPUT_MISSING` warning — fail-open posture so a missing
+  feed doesn't zero everyone, but ops sees the warning to chase.
+- `calculationDetails` carries the full trail: `formatTier`, `roleBucket`,
+  `slabAmount`, attendance triplet, sales fields, ratings,
+  `salesStatus`, plus reconciliation hooks (`rilIncentiveSlab`,
+  `rilFinalPay`).
+
+**Engine (6.1) — Grocery Category PIP (`engines.ts:1130+` `computeGroceryCategoryPip`)**
+
+- Resolves plans where `config.mode === "CATEGORY_PIP"`. Plan window
+  intersects with input span.
+- Reads `CategoryPipArticle[]` from the plan + matching
+  `SalesTransaction[]` filtered by `articleCode IN [...articleSet]` —
+  one batched query per plan, cap at the plan's effective range.
+- Per-article gate: `qty >= ceil(targetQty × minCriteriaPct)` →
+  payout = `qty × rateRs`, else 0. Aggregated to a store-pool total.
+- Attribution rule via `plan.config.pipAttribution`:
+  - `EQUAL_CSA` (default) — split across SA + OMNI + PT in the store.
+  - `EQUAL_ALL_EMPLOYEES` — split across all active employees.
+  - `STORE_LEVEL_DM_DRIVEN` — entire pool to DMs.
+- Two reasons:
+  - `BELOW_MIN_CRITERIA` (BLOCKING) — store didn't clear the threshold
+    on any article in the campaign.
+  - `ARTICLES_NOT_SOLD` (WARNING) — zero qualifying transactions in
+    scope (still emits the row so the mobile shows "no sales yet").
+- `calculationDetails` carries `perArticle[]` breakdown so the mobile
+  drilldown can render "you sold X / target Y, qualifying yes/no"
+  per SKU.
+
+**Ingest (6.1)**
+
+- New `POST /api/ingest/grocery-monthly` (`src/app/api/ingest/grocery-monthly/route.ts`).
+  Accepts `stores[]` + `employees[]` arrays in one request. Same
+  Idempotency-Key contract as the other ingest endpoints. Per-row Zod
+  validation; FK existence checks against StoreMaster / EmployeeMaster;
+  upserts on `(storeCode, vertical, periodStart)` and `(employeeId,
+  periodStart)`. Computes `salesStatus` from the two ratings if not
+  explicitly overridden. Enqueues a single RecomputeJob spanning all
+  touched stores.
+- Sales endpoint already accepts article codes — Category PIP needs no
+  ingest changes.
+
+**Admin (6.1) — `incentives.ts`**
+
+- `getAllStoresSummary` enriches each store row with monthly metric
+  aggregates: `latestSalesAchievementPct`, `latestSalesBucket`,
+  `latestSalesStatus`, `latestMysteryShopperRating`,
+  `latestPopComplianceRating`, `monthsWithMetric`,
+  `monthsManagerBlocked`, `monthsNoneQualified`. Null = no data yet.
+- `getStoreDetail` adds `monthlyMetrics[]` (chronological array, all
+  months in period) + `employeeMonthlyInputs` (keyed by employeeId,
+  array of month-level attendance rows). Empty for non-Grocery stores.
+
+**Mobile (6.1) — `incentive-app/src/api/transformers/grocery.js`**
+
+- Transformer forwards `currentStanding.hrSales` (mode, formatTier,
+  roleBucket, slabAmount, attendance triplet, sales fields, ratings,
+  status) and `currentStanding.pip` (campaign metadata, perArticle
+  breakdown, store pool, earner count, funding source) at the top
+  level of the payload. UI components consume these to render the
+  HR Sales hero card and the PIP per-article drilldown when present.
+- `EligibilityNotice` is unchanged — the six new reason codes flow
+  through with their server-composed messages.
+
+**Plan-shape discriminator**
+
+`IncentivePlan.config.mode` is the dispatcher key. Today's modes:
+
+- `null` / unset — legacy. Routed by formula type.
+- `"HR_SALES"` — Phase 6.1 Grocery HR Sales.
+- `"CATEGORY_PIP"` — Phase 6.1 Grocery Category PIP.
+
+F&L plans don't need a mode (one engine path per vertical for now).
+When we add more Grocery plan shapes, this discriminator absorbs them
+cleanly.
+
+**What's NOT in Track 2/3 (deferred to Phase 7 seeding)**
+
+- All seeding: 144 Grocery stores from .xlsb, 4,372 employees with
+  Position Name → EmployeeRole normalization, 1 HR Sales plan with
+  46 slab rows (21 Large + 25 Stores), 1 Category PIP plan with 17
+  Dairy Day articles, store-monthly metrics, employee-monthly inputs,
+  plus the F&L pilot data deferred from Phase 5.
+- Reconciliation scripts (engine vs RIL) — needs seed data first.
+- Admin UI components consuming the new fields (badges, drilldown
+  tables) — JSON contract is ready, components are a downstream sprint.
+- Mobile UI components for the HR Sales hero card and PIP per-article
+  table — data is plumbed, components are a downstream sprint.
+
 ### Git identity
 
 - Both repos have local `user.name=spartaaaa4`, `user.email=wealth.anuj4@gmail.com`

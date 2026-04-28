@@ -35,16 +35,81 @@ enum StoreStatus {
 /// `src/server/calculations/engines.ts`). Adding them to the enum now
 /// avoids a migration once the answer lands.
 ///
+/// Phase 6.1 (Grocery HR Sales pilot): added `ASM` (Assistant Store Manager)
+/// because RIL's Grocery slab matrix breaks managers into SM / ASM / Other
+/// Mgrl (DM-equivalent) for the Stores tier. The .xlsb working file has
+/// "Asst Store Manager" as a distinct Position Name. ASM and SM share the
+/// same slab amounts in the v1 matrix but the policy keeps them separate,
+/// so we mirror that — if the policy diverges later, no migration needed.
+///
 /// CSA (the Reliance term) maps to our `SA` value — this codebase pre-dates
 /// the F&L scope and uses `SA` as the customer-facing-staff label. Ingest
 /// helpers normalise either string to `SA`.
 enum EmployeeRole {
   SM
   DM
+  ASM
   SA
   BA
   OMNI
   PT
+}
+
+/// Phase 6.1 — Grocery format-tier discriminator. The HR Sales slab matrix
+/// has two completely different tables — one for FreshPik (a "Large
+/// Format" store with bigger payouts and finer achievement bands) and one
+/// for the Smart family (Smart, Smart Bazaar, Smart Point, gofresh). The
+/// engine resolves the tier per-store via a constant map keyed on
+/// `StoreMaster.storeFormat` (see `formatTierFor()` in `engines.ts`).
+enum FormatTier {
+  LARGE_FORMAT
+  STORES
+}
+
+/// Phase 6.1 — Grocery slab role buckets. The Stores tier uses 5 distinct
+/// rows (SM / ASM / OTHER_MGRL / CSA / PT); the Large tier collapses to 3
+/// (SM_ASM combined / OTHER_MGRL / ASSOCIATES combined). Engine maps an
+/// `(EmployeeRole, FormatTier)` pair to one of these buckets — see
+/// `roleBucketFor()` in `engines.ts`.
+enum GroceryRoleBucket {
+  SM           // Stores tier
+  ASM          // Stores tier
+  OTHER_MGRL   // Both tiers (Department Manager-equivalent)
+  CSA          // Stores tier
+  PT           // Stores tier
+  SM_ASM       // Large tier (SM + ASM combined)
+  ASSOCIATES   // Large tier (CSA + PT combined)
+}
+
+/// Phase 6.1 — Store-level monthly quality ratings. RIL's Grocery feed
+/// carries Mystery Shopper and POP Compliance ratings as Green/Amber/Red
+/// per store per month. Both ratings drive the `StoreSalesStatus` (see
+/// below) which gates manager payouts.
+enum StoreRating {
+  GREEN
+  AMBER
+  RED
+}
+
+/// Phase 6.1 — Quality-gate outcome for a Grocery store-month. Computed
+/// from the two ratings at ingest time but stored as the canonical truth
+/// value so ops can manually override (e.g., "Amber but approved by RM").
+///   - ALL_STAFF_QUALIFIED:        SM/ASM/DM/CSA/PT all earn (when sales gate also passes)
+///   - ONLY_ASSOCIATES_QUALIFIED:  Managers blocked, only CSA/PT earn
+///   - NONE_QUALIFIED:             Nobody earns (both ratings RED, or explicit ops override)
+enum StoreSalesStatus {
+  ALL_STAFF_QUALIFIED
+  ONLY_ASSOCIATES_QUALIFIED
+  NONE_QUALIFIED
+}
+
+/// Phase 6.1 — Funding source for an incentive plan. Drives ledger
+/// labelling, approval flow, and downstream reporting (RIL P&L vs vendor
+/// recharge). Default RIL preserves backward-compat — existing plans don't
+/// need to be touched.
+enum FundingSource {
+  RIL
+  VENDOR
 }
 
 enum PayrollStatus {
@@ -217,6 +282,7 @@ model EmployeeMaster {
   adminAccess        EmployeeAdminAccess?
   submittedApprovals ApprovalRequest[]  @relation("ApprovalSubmitter")
   decidedApprovals   ApprovalRequest[]  @relation("ApprovalDecider")
+  monthlyInputs      EmployeeMonthlyInput[]
 
   @@index([storeCode])
   @@index([hasAdminAccess])
@@ -401,6 +467,22 @@ model Target {
   @@map("target")
 }
 
+/// Top-level incentive plan. `config` is a JSON discriminator carrying
+/// plan-shape-specific knobs:
+///   - F&L weekly:        `{ poolPct, minWorkingDays }`
+///   - Grocery campaign:  uses CampaignConfig + CampaignPayoutSlab
+///   - **Grocery HR Sales (Phase 6.1)**: `{ mode: "HR_SALES" }`
+///       Resolves to `computeGroceryHrSales()` which reads slabs from
+///       `GrocerySalesSlab`, store-month metrics from `StoreMonthlyMetric`,
+///       and per-employee monthly inputs from `EmployeeMonthlyInput`.
+///   - **Grocery Category PIP (Phase 6.1)**: `{ mode: "CATEGORY_PIP" }`
+///       Resolves to `computeGroceryCategoryPip()` which reads article
+///       rates from `CategoryPipArticle` and matches against
+///       `SalesTransaction.articleCode`.
+///
+/// `fundingSource` (RIL / VENDOR) is structured rather than buried in
+/// config because it affects approval flow and ledger labelling — the
+/// admin queue filters by it and downstream reports group by it.
 model IncentivePlan {
   id                    Int                    @id @default(autoincrement())
   planName              String                 @map("plan_name")
@@ -409,6 +491,9 @@ model IncentivePlan {
   periodType            PeriodType             @map("period_type")
   status                ApprovalStatus         @default(DRAFT)
   version               Int                    @default(1)
+  /// Phase 6.1 — RIL P&L vs vendor-funded (e.g., Dairy Day for Ice Cream
+  /// PIP). Default RIL keeps existing plans unchanged.
+  fundingSource         FundingSource          @default(RIL) @map("funding_source")
   effectiveFrom         DateTime?              @map("effective_from") @db.Date
   effectiveTo           DateTime?              @map("effective_to") @db.Date
   createdBy             String?                @map("created_by")
@@ -422,6 +507,8 @@ model IncentivePlan {
   achievementMultipliers AchievementMultiplier[]
   campaignConfigs       CampaignConfig[]
   fnlRoleSplits         FnlRoleSplit[]
+  grocerySalesSlabs     GrocerySalesSlab[]
+  categoryPipArticles   CategoryPipArticle[]
   applicability         PlanApplicability[]
   incentiveLedger       IncentiveLedger[]
   calculationRuns       CalculationRun[]
@@ -429,6 +516,7 @@ model IncentivePlan {
   storePeriodRollups    StorePeriodRollup[]
 
   @@index([vertical, status, effectiveFrom, effectiveTo])
+  @@index([fundingSource, status])
   @@map("incentive_plan")
 }
 
@@ -839,4 +927,200 @@ model AuditLog {
 
   @@index([entityType, entityId, performedAt])
   @@map("audit_log")
+}
+
+/// Phase 6.1 (Grocery HR Sales pilot) — per-store-month external metrics.
+/// Mirror of `StoreWeeklyMetric` but on a monthly cadence (the Grocery
+/// pilot runs monthly, not weekly). Carries:
+///
+///   1. **Sales achievement** — denormalized `salesBudgetRsLacs`,
+///      `salesActualRsLacs`, and `salesAchievementPct`. The values are
+///      ALSO computable from raw sales_transaction rows but RIL ships
+///      them in the working file directly, and the engine reads them as
+///      authoritative so a re-ingest of corrections (e.g., "March actual
+///      was off, here's the corrected number") drives a recompute without
+///      having to retroactively edit POS data. `salesBucket` is the band
+///      label as ingested ("100% - 110%", ">=120%", etc.) for audit.
+///
+///   2. **Quality gates** — Mystery Shopper rating × POP Compliance
+///      rating drive the canonical `salesStatus` truth value. Computed at
+///      ingest (both GREEN → ALL_STAFF_QUALIFIED; any AMBER →
+///      ONLY_ASSOCIATES_QUALIFIED; any RED → NONE_QUALIFIED) but stored so
+///      ops can override post-ingest without re-deriving.
+///
+/// Why a separate table from StoreWeeklyMetric: different cadence, different
+/// gate semantics (PI/GM are blocking-or-not flags, here we have a
+/// three-state status), and different engine path. Folding them into one
+/// generic `StorePeriodMetric` would over-abstract — better to keep each
+/// vertical's input shape explicit.
+model StoreMonthlyMetric {
+  id                   Int               @id @default(autoincrement())
+  storeCode            String            @map("store_code") @db.VarChar(32)
+  vertical             Vertical
+  periodStart          DateTime          @map("period_start") @db.Date
+  periodEnd            DateTime          @map("period_end") @db.Date
+
+  /// Sales budget for the month, in Rs Lacs (RIL's unit of choice).
+  /// The engine converts to Rs internally for math.
+  salesBudgetRsLacs    Decimal?          @map("sales_budget_rs_lacs") @db.Decimal(12, 4)
+  /// Sales actual for the month, in Rs Lacs.
+  salesActualRsLacs    Decimal?          @map("sales_actual_rs_lacs") @db.Decimal(12, 4)
+  /// Sales actual ÷ budget, as decimal fraction (1.10 = 110%).
+  salesAchievementPct  Decimal?          @map("sales_achievement_pct") @db.Decimal(8, 4)
+  /// Band label as ingested (e.g., ">=120%", "100% - 110%"). Stored for
+  /// audit; the engine derives the active band from `salesAchievementPct`
+  /// against the `GrocerySalesSlab.bandMin/Max` ranges, not from this label.
+  salesBucket          String?           @map("sales_bucket") @db.VarChar(32)
+
+  mysteryShopperRating StoreRating?      @map("mystery_shopper_rating")
+  popComplianceRating  StoreRating?      @map("pop_compliance_rating")
+  /// Canonical quality-gate truth value. Engine reads this; ops can
+  /// override for explicit exceptions (the override fields on the ingest
+  /// endpoint write directly here, bypassing rating-based derivation).
+  salesStatus          StoreSalesStatus? @map("sales_status")
+
+  note                 String?           @db.Text
+  source               String            @default("API") @db.VarChar(32)
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+
+  @@unique([storeCode, vertical, periodStart])
+  @@index([vertical, periodStart])
+  @@index([salesStatus, periodStart])
+  @@map("store_monthly_metric")
+}
+
+/// Phase 6.1 — per-employee-month inputs for Grocery HR Sales calc.
+/// Three groups of fields:
+///
+///   1. **Attendance arithmetic** — `attendance` is the count of days the
+///      employee was on rolls in the month (often = days_in_month for
+///      active employees). `awlDays` is "Authorized With Leave" — approved
+///      leave that reduces working days. `workingDays` is the final number
+///      used for the pro-rata divisor. RIL ships all three; we don't
+///      re-derive from per-day Attendance rows because the .xlsb is the
+///      source of truth for the pilot (their HR system computes these
+///      with rules we don't see).
+///
+///   2. **Reconciliation hooks** — `rilIncentiveSlab` and `rilFinalPay`
+///      are RIL's pre-computed values from the working file. We store
+///      them so the reconciliation script can do per-row diffs (engine vs
+///      RIL) without joining back to the raw file.
+///
+///   3. **Per-employee snapshot fields** are NOT here — Position Name,
+///      EEGrp, etc. live on EmployeeMaster (long-lived) or get derived
+///      from EmployeeRole (the engine's discriminator).
+///
+/// Why a separate table from Attendance: different cadence (monthly vs
+/// per-day), different semantics (RIL-provided aggregates vs raw status
+/// rows), and the per-day Attendance rows aren't always available for
+/// Grocery (RIL may ship only the monthly aggregate for the pilot).
+model EmployeeMonthlyInput {
+  id              Int            @id @default(autoincrement())
+  employeeId      String         @map("employee_id") @db.VarChar(64)
+  periodStart     DateTime       @map("period_start") @db.Date
+  periodEnd       DateTime       @map("period_end") @db.Date
+
+  /// Total days the employee was on rolls in the month.
+  attendance      Int
+  /// Approved-leave days (subtracted from working days).
+  awlDays         Int            @default(0) @map("awl_days")
+  /// Effective working days = attendance − awlDays − other absences.
+  /// RIL ships this directly; engine uses it for pro-rata math.
+  workingDays     Int            @map("working_days")
+
+  /// RIL's pre-computed slab amount from the working file. Engine doesn't
+  /// read this — it's purely for the reconciliation script.
+  rilIncentiveSlab Decimal?      @map("ril_incentive_slab") @db.Decimal(12, 2)
+  /// RIL's pre-computed final pay from the working file (slab × wd / att).
+  /// Reconciliation ground-truth for engine output diff.
+  rilFinalPay      Decimal?      @map("ril_final_pay") @db.Decimal(12, 2)
+
+  source          String         @default("API") @db.VarChar(32)
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  employee        EmployeeMaster @relation(fields: [employeeId], references: [employeeId], onDelete: Restrict)
+
+  @@unique([employeeId, periodStart])
+  @@index([periodStart])
+  @@map("employee_monthly_input")
+}
+
+/// Phase 6.1 — Grocery HR Sales slab matrix.
+///
+/// One row per (planId, formatTier, roleBucket, achievement-band). The
+/// engine looks up the row matching the store's tier, the employee's
+/// role-bucket, and where the store's `salesAchievementPct` falls in the
+/// `[bandMinPct, bandMaxPct)` range.
+///
+/// Bands are stored as decimal fractions, half-open intervals:
+///   - `bandMinPct = 0.85`, `bandMaxPct = 0.95` → 85% ≤ ach < 95%
+///   - `bandMaxPct = NULL` → ach ≥ bandMinPct (the ">=120%" top band)
+///   - The "<85%" / "<95%" zero-payout band can be encoded explicitly
+///     (bandMinPct=0, bandMaxPct=0.85, amountRs=0) or omitted (engine
+///     defaults to 0 when no band matches).
+///
+/// Reversibility note: the matrix shape (band count, role-bucket count)
+/// is encoded as data, not code — so a v2 policy with different bands or
+/// new role buckets can be re-seeded without touching the engine. The
+/// engine just walks the rows for the active plan.
+model GrocerySalesSlab {
+  id              Int                @id @default(autoincrement())
+  planId          Int                @map("plan_id")
+  formatTier      FormatTier         @map("format_tier")
+  roleBucket      GroceryRoleBucket  @map("role_bucket")
+  /// Min achievement (inclusive), as decimal fraction.
+  bandMinPct      Decimal            @map("band_min_pct") @db.Decimal(6, 4)
+  /// Max achievement (exclusive). NULL = +infinity (top band).
+  bandMaxPct      Decimal?           @map("band_max_pct") @db.Decimal(6, 4)
+  /// Slab payout amount in Rs (the .xlsb stores 250, 325, 500, 650, 850,
+  /// 1000, 1100, 1400, 1800, 2300, 2400, 3000 etc.).
+  amountRs        Decimal            @map("amount_rs") @db.Decimal(12, 2)
+  effectiveFrom   DateTime?          @map("effective_from") @db.Date
+  effectiveTo     DateTime?          @map("effective_to") @db.Date
+  plan            IncentivePlan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, formatTier, roleBucket, bandMinPct])
+  @@index([planId, formatTier, roleBucket])
+  @@map("grocery_sales_slab")
+}
+
+/// Phase 6.1 — Grocery Category PIP (Per-Piece Incentive) article catalog.
+///
+/// One row per article in a category-PIP plan (e.g., the 17 Dairy Day SKUs
+/// in the Mar'26 Ice Cream plan). The engine matches sales transactions
+/// against `articleCode` and pays `rateRs × qtySold`, gated by the min
+/// criteria threshold (default 80% of `targetQty`).
+///
+/// Below threshold = zero payout. Engine emits `BELOW_MIN_CRITERIA` reason.
+///
+/// Why article-level (not department-level): the policy varies rate per
+/// SKU (₹5 for 700ml CBD, ₹2 for 500ml TUB) and target per SKU. A single
+/// department-level rate would lose this granularity. The match is on
+/// `SalesTransaction.articleCode` so no new ingest is needed — the
+/// existing /api/ingest/sales pipeline already carries article codes.
+model CategoryPipArticle {
+  id              Int            @id @default(autoincrement())
+  planId          Int            @map("plan_id")
+  /// Article identifier (RIL article number). Matched against
+  /// `SalesTransaction.articleCode` at calc time.
+  articleCode     String         @map("article_code")
+  articleDesc     String?        @map("article_desc")
+  brand           String?
+  /// Per-piece incentive amount in Rs. The .xlsb has ₹5 and ₹2 tiers.
+  rateRs          Decimal        @map("rate_rs") @db.Decimal(8, 2)
+  /// Target quantity (pieces) for the period. Most rows in the Mar'26
+  /// file are 125; outliers exist (25, 75, 100, 175, 250, 300, 1175).
+  targetQty       Int            @map("target_qty")
+  /// Min-criteria threshold as a fraction of targetQty. Below this, no
+  /// payout. RIL default is 0.80 (80%) — encoded as default so missing
+  /// values from ingest still gate sensibly.
+  minCriteriaPct  Decimal        @default(0.80) @map("min_criteria_pct") @db.Decimal(4, 2)
+  effectiveFrom   DateTime?      @map("effective_from") @db.Date
+  effectiveTo     DateTime?      @map("effective_to") @db.Date
+  plan            IncentivePlan  @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, articleCode])
+  @@index([planId])
+  @@map("category_pip_article")
 }
